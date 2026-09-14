@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 182, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 412, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
@@ -58,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !panel.setFrameUsingName("CodexNumbersPanel") {
             if let screen = NSScreen.main { panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX-590, y: screen.visibleFrame.minY+24)) }
         }
-        panel.setContentSize(NSSize(width: 182, height: 72))
+        panel.setContentSize(NSSize(width: 412, height: 72))
         panel.orderFrontRegardless()
         analytics = AnalyticsController()
         updateMenu()
@@ -124,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         badge.usage = usage
     }
     func fitPanel(for usages: [Usage]) {
-        let width = usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 182
+        let width = usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 412
         var frame = panel.frame
         frame.size.width = ceil(width)
         if let screen = panel.screen ?? NSScreen.main {
@@ -137,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         numberAnimation = nil
         guard let start = displayed,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              start.tokens != target.tokens else {
+              start.tokens != target.tokens || start.remainingLimit != target.remainingLimit else {
             renderNumbers(target)
             fitPanel(for: [target])
             return
