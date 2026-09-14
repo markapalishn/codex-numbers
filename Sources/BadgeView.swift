@@ -13,8 +13,14 @@ final class BadgeView: ClickableBadge {
     private var flameTimer: Timer?
     private var phase: Double = 0
     private var intensity: Double {
-        guard let count = usage?.requestTokens, count > 0 else { return 0 }
-        return max(0.08, min(1, (log10(Double(count)) - 3) / 3))
+        let count = Double(usage?.requestTokens ?? 0)
+        guard count > 0 else { return 0 }
+        let stops: [(Double, Double)] = [(0, 0.02), (25_000, 0.18), (100_000, 0.48), (300_000, 0.82), (1_000_000, 1)]
+        for index in 1..<stops.count where count <= stops[index].0 {
+            let a = stops[index-1], b = stops[index]
+            return a.1 + (b.1-a.1) * (count-a.0) / (b.0-a.0)
+        }
+        return 1
     }
     private func updateFlameAnimation() {
         let animate = intensity > 0 && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -26,7 +32,7 @@ final class BadgeView: ClickableBadge {
                 self.flameTimer?.invalidate(); self.flameTimer = nil; self.phase = 0; self.needsDisplay = true; return
             }
             guard self.window?.isVisible == true else { return }
-            self.phase += (0.07 + self.intensity * 0.08) * (self.usage?.running == true ? 1 : 0.55)
+            self.phase += 0.10 + self.intensity * 0.15
             self.setNeedsDisplay(NSRect(x: 12, y: 5, width: 39, height: 49))
         }
         flameTimer = timer
@@ -47,7 +53,7 @@ final class BadgeView: ClickableBadge {
         }
         let small = NSFont.systemFont(ofSize: 10, weight: .medium)
         drawFlame()
-        text(usage?.running == true ? "Запрос · в работе" : "Запрос", x: 58, y: 10, font: small, color: .secondaryLabelColor)
+        text(usage?.running == true ? "Запрос · в работе" : "Запрос · ожидание", x: 58, y: 10, font: small, color: .secondaryLabelColor)
         let count = usage.map { Usage.exact($0.requestTokens) } ?? "—"
         text(count, x: 57, y: 25, font: Self.numberFont, color: .labelColor)
         let numberWidth = (count as NSString).size(withAttributes: [.font: Self.numberFont]).width
@@ -74,34 +80,59 @@ final class BadgeView: ClickableBadge {
     }
     private func drawFlame() {
         let strength = intensity
-        let flicker = sin(phase) * (0.025 + strength * 0.04)
-        let height = CGFloat(18 + 19 * strength + 1.3 * sin(phase * 1.7) * strength)
-        let width = CGFloat(16 + 11 * strength)
-        let origin = NSPoint(x: 31 - width / 2, y: 47 - height)
+        guard strength > 0 else {
+            NSColor.tertiaryLabelColor.withAlphaComponent(0.3).setFill()
+            NSBezierPath(roundedRect: NSRect(x: 25, y: 43, width: 12, height: 3), xRadius: 1.5, yRadius: 1.5).fill()
+            return
+        }
+        let sway = sin(phase) * (0.08 + strength * 0.09)
+        let bounce = sin(phase * 1.9)
+        let height = CGFloat(13 + 29 * strength + bounce * 2 * strength)
+        let width = CGFloat(12 + 22 * strength - bounce * strength)
+        let origin = NSPoint(x: 31 - width / 2, y: 49 - height)
         func p(_ x: Double, _ y: Double) -> NSPoint {
             NSPoint(x: origin.x + CGFloat(x) * width, y: origin.y + CGFloat(y) * height)
         }
+        // Rounded, layered vector silhouette with independent moving tongues.
         let flame = NSBezierPath()
-        flame.move(to: p(0.51 + flicker, 0))
-        flame.curve(to: p(0.71, 0.45), controlPoint1: p(0.47, 0.23), controlPoint2: p(0.82 + flicker, 0.26))
-        flame.curve(to: p(0.85, 0.30), controlPoint1: p(0.78, 0.45), controlPoint2: p(0.86, 0.38))
-        flame.curve(to: p(0.98, 0.73), controlPoint1: p(0.85, 0.44), controlPoint2: p(1.02, 0.54))
-        flame.curve(to: p(0.49, 1), controlPoint1: p(0.94, 0.92), controlPoint2: p(0.77, 1.02))
-        flame.curve(to: p(0.03, 0.72), controlPoint1: p(0.20, 1.02), controlPoint2: p(0.01, 0.93))
-        flame.curve(to: p(0.20, 0.39), controlPoint1: p(-0.03, 0.57), controlPoint2: p(0.15, 0.48))
-        flame.curve(to: p(0.24, 0.58), controlPoint1: p(0.17, 0.48), controlPoint2: p(0.20, 0.54))
-        flame.curve(to: p(0.51 + flicker, 0), controlPoint1: p(0.46, 0.41), controlPoint2: p(0.30 + flicker, 0.20))
+        flame.move(to: p(0.53 + sway, 0))
+        flame.curve(to: p(0.79, 0.44), controlPoint1: p(0.48 + sway, 0.22), controlPoint2: p(0.86, 0.27))
+        flame.curve(to: p(0.86, 0.27 + 0.05*sin(phase*1.4)), controlPoint1: p(0.90, 0.41), controlPoint2: p(0.87, 0.32))
+        flame.curve(to: p(0.98, 0.76), controlPoint1: p(0.93, 0.45), controlPoint2: p(1.07, 0.59))
+        flame.curve(to: p(0.51, 1), controlPoint1: p(0.94, 0.95), controlPoint2: p(0.74, 1.03))
+        flame.curve(to: p(0.03, 0.77), controlPoint1: p(0.25, 1.03), controlPoint2: p(0.04, 0.95))
+        flame.curve(to: p(0.17, 0.33 + 0.05*cos(phase)), controlPoint1: p(-0.07, 0.57), controlPoint2: p(0.15, 0.46))
+        flame.curve(to: p(0.24, 0.56), controlPoint1: p(0.15, 0.45), controlPoint2: p(0.17, 0.53))
+        flame.curve(to: p(0.53 + sway, 0), controlPoint1: p(0.42, 0.35), controlPoint2: p(0.28 + sway, 0.15))
         flame.close()
-        let orange = NSColor(calibratedRed: 1, green: 0.55, blue: 0.15, alpha: 0.9)
-        let red = NSColor(calibratedRed: 1, green: 0.25 + 0.10 * (1-strength), blue: 0.10, alpha: 1)
-        NSGradient(starting: orange, ending: red)?.draw(in: flame, angle: 90)
+        NSGradient(starting: NSColor(calibratedRed: 1, green: 0.24, blue: 0.08, alpha: 1),
+                   ending: NSColor(calibratedRed: 1, green: 0.58, blue: 0.07, alpha: 1))?.draw(in: flame, angle: 90)
+        let heart = NSBezierPath()
+        heart.move(to: p(0.52 - sway*0.6, 0.30))
+        heart.curve(to: p(0.75, 0.66), controlPoint1: p(0.46, 0.48), controlPoint2: p(0.76, 0.47))
+        heart.curve(to: p(0.82, 0.54), controlPoint1: p(0.81, 0.65), controlPoint2: p(0.83, 0.60))
+        heart.curve(to: p(0.50, 0.96), controlPoint1: p(0.96, 0.84), controlPoint2: p(0.75, 0.97))
+        heart.curve(to: p(0.20, 0.65), controlPoint1: p(0.25, 0.96), controlPoint2: p(0.08, 0.80))
+        heart.curve(to: p(0.52 - sway*0.6, 0.30), controlPoint1: p(0.35, 0.65), controlPoint2: p(0.29, 0.48))
+        heart.close()
+        NSGradient(starting: NSColor(calibratedRed: 1, green: 0.73, blue: 0.08, alpha: 1),
+                   ending: NSColor(calibratedRed: 1, green: 0.92, blue: 0.25, alpha: 1))?.draw(in: heart, angle: 90)
         let core = NSBezierPath()
-        core.move(to: p(0.53 - flicker * 0.6, 0.43))
-        core.curve(to: p(0.73, 0.83), controlPoint1: p(0.48, 0.63), controlPoint2: p(0.79, 0.70))
-        core.curve(to: p(0.28, 0.83), controlPoint1: p(0.70, 1.01), controlPoint2: p(0.30, 1.02))
-        core.curve(to: p(0.53 - flicker * 0.6, 0.43), controlPoint1: p(0.22, 0.68), controlPoint2: p(0.45, 0.63))
+        core.move(to: p(0.50 + sway*0.3, 0.59))
+        core.curve(to: p(0.68, 0.84), controlPoint1: p(0.47, 0.72), controlPoint2: p(0.71, 0.73))
+        core.curve(to: p(0.33, 0.84), controlPoint1: p(0.64, 0.98), controlPoint2: p(0.34, 0.98))
+        core.curve(to: p(0.50 + sway*0.3, 0.59), controlPoint1: p(0.26, 0.73), controlPoint2: p(0.44, 0.73))
         core.close()
-        NSGradient(starting: NSColor(calibratedRed: 1, green: 0.92, blue: 0.60, alpha: 1), ending: .systemYellow)?.draw(in: core, angle: 90)
+        NSColor(calibratedRed: 1, green: 0.98, blue: 0.75, alpha: 1).setFill(); core.fill()
+        if strength > 0.55 {
+            for index in 0..<2 {
+                let cycle = (phase * 0.11 + Double(index) * 0.5).truncatingRemainder(dividingBy: 1)
+                let opacity = sin(cycle * .pi) * (strength-0.55) * 1.5
+                NSColor.systemOrange.withAlphaComponent(opacity).setFill()
+                let x = 21 + CGFloat(index)*17 + CGFloat(sin(phase + Double(index))) * 2
+                let y = max(3, origin.y + 8 - CGFloat(cycle) * 16)
+                NSBezierPath(ovalIn: NSRect(x: x, y: y, width: 2, height: 3)).fill()
+            }
+        }
     }
-
 }

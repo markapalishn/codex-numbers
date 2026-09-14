@@ -99,11 +99,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         badge.wantsLayer = true
                         badge.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
                         badge.layer?.cornerRadius = 30
-                        if let bitmap = badge.bitmapImageRepForCachingDisplay(in: badge.bounds) {
-                            badge.cacheDisplay(in: badge.bounds, to: bitmap)
-                            if let png = bitmap.representation(using: .png, properties: [:]) {
-                                try? png.write(to: output.deletingPathExtension().appendingPathExtension("badge.png"))
+                        func captureBadge(_ name: String) {
+                            if let bitmap = badge.bitmapImageRepForCachingDisplay(in: badge.bounds) {
+                                badge.cacheDisplay(in: badge.bounds, to: bitmap)
+                                if let png = bitmap.representation(using: .png, properties: [:]) {
+                                    try? png.write(to: output.deletingPathExtension().appendingPathExtension(name + ".png"))
+                                }
                             }
+                        }
+                        captureBadge("badge")
+                        for (name, count) in [("idle", 0), ("low", 10_000), ("high", 1_000_000)] {
+                            var example = Usage()
+                            example.tokens = Tokens(["input_tokens": count])
+                            example.running = count > 0
+                            example.remainingLimit = 86
+                            badge.usage = example
+                            captureBadge("badge-" + name)
                         }
                         analytics.tabs.selectedSegment = 1
                         analytics.rebuild()
@@ -118,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 guard let usage else { return }
                 current = usage
-                animateNumbers(to: usage)
+                animateNumbers(to: usage.badgeUsage)
                 updateMenu()
                 panel.saveFrame(usingName: "CodexNumbersPanel")
             }

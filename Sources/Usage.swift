@@ -30,6 +30,11 @@ struct Usage {
         return String(format: "%.2f", Double(n)/1_000_000).replacingOccurrences(of: ".", with: ",") + " млн"
     }
     var requestTokens: Int { tokens.input + tokens.output }
+    var badgeUsage: Usage {
+        var result = self
+        if !running { result.tokens = Tokens() }
+        return result
+    }
     private static let integerFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
@@ -114,9 +119,10 @@ final class SessionReader {
         case "task_started":
             turnID = p["turn_id"] as? String ?? "\(current.session):\(stamp)"
             current.tokens = Tokens(); current.running = true; hasTurn = true; turnHasUsage = false
+            current.timestamp = stamp; usage = current
         case "task_complete", "turn_aborted":
             current.running = false
-            if hasTurn, turnHasUsage { current.timestamp = stamp; usage = current }
+            current.timestamp = stamp; usage = current
             hasTurn = false
         case "token_count":
             if let raw = p["rate_limits"] as? [String: Any], let snapshot = LimitSnapshot(raw, timestamp: stamp) { limit = snapshot }
