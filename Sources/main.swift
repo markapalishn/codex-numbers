@@ -35,11 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let glassFrame = surface.bounds.insetBy(dx: 6, dy: 6)
         let content = BadgeView(frame: NSRect(origin: .zero, size: glassFrame.size))
         badge = content
-        content.onClick = { [weak self] in self?.showAnalytics() }
+        content.onClick = { [weak self] in self?.toggleAnalytics() }
         content.setAccessibilityElement(true)
         content.setAccessibilityRole(.button)
-        content.setAccessibilityLabel("Открыть аналитику расхода Codex")
-        content.toolTip = "Нажмите для аналитики · потяните, чтобы переместить"
+        content.setAccessibilityLabel("Показать или скрыть аналитику расхода Codex")
+        content.toolTip = "Нажмите, чтобы показать или скрыть аналитику · потяните, чтобы переместить"
         content.autoresizingMask = [.width, .height]
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView(frame: glassFrame)
@@ -216,6 +216,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.menu = menu.copy() as? NSMenu
     }
     @objc func showAnalytics() { analytics.present(near: panel) }
+    func toggleAnalytics() {
+        if analytics.window?.isVisible == true {
+            analytics.close()
+        } else {
+            showAnalytics()
+        }
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         panel.orderFrontRegardless()
         return true
