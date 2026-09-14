@@ -16,12 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let icon = NSImage(systemSymbolName: "chart.bar.fill", accessibilityDescription: "Codex Numbers") {
-            icon.isTemplate = true
-            item.button?.image = icon
-        } else { item.button?.title = "◈" }
-        item.button?.toolTip = "Codex Numbers"
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.title = "—"
+        item.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        item.button?.toolTip = "Использование лимита Codex"
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 412, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .floating
         panel.isFloatingPanel = true
@@ -129,6 +127,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func renderNumbers(_ usage: Usage) {
         displayed = usage
         badge.usage = usage
+        let used = usage.remainingLimit.map { "\(100 - $0)%" } ?? "—"
+        item.button?.title = used
+        item.button?.toolTip = "Использовано лимита Codex: \(used)"
     }
     func fitPanel(for usages: [Usage]) {
         let width = usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 412
