@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.title = "—"
         item.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         item.button?.toolTip = "Использование лимита Codex"
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 172, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: BadgeView.collapsedWidth + 12, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
@@ -63,7 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !panel.setFrameUsingName("CodexNumbersPanel") {
             if let screen = NSScreen.main { panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX-590, y: screen.visibleFrame.minY+24)) }
         }
-        panel.setContentSize(NSSize(width: 172, height: 72))
+        panel.setContentSize(NSSize(width: BadgeView.collapsedWidth + 12, height: 72))
         panel.orderFrontRegardless()
         analytics = AnalyticsController()
         analytics.countMode = countMode
@@ -165,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func fitPanel(for usages: [Usage]) {
-        setPanelWidth(usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 172)
+        setPanelWidth(usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? (BadgeView.collapsedWidth + 12))
     }
     func setPanelWidth(_ width: CGFloat) {
         var frame = panel.frame

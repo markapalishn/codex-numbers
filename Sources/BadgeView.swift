@@ -22,7 +22,14 @@ final class BadgeView: ClickableBadge {
     /// Returns true while the finite counter/resize transition is still running.
     var numberFrame: ((TimeInterval, Bool) -> Bool)? { didSet { updateAnimation() } }
     var canAnimate: Bool { clock.canAnimate }
-    static let collapsedWidth: CGFloat = 160
+    private static let limitCaptionFont = NSFont.systemFont(ofSize: 10, weight: .medium)
+    private static let limitRightExtent = max(
+        28 + ("Использовано" as NSString).size(withAttributes: [.font: limitCaptionFont]).width,
+        27 + ("100%" as NSString).size(withAttributes: [.font: numberFont]).width)
+    // Include the ring's stroke so the visible content has equal outer padding.
+    static let collapsedWidth = ceil(16 * 2 + 1.25 + limitRightExtent)
+    private var measuredResetDays: Int?
+    private var resetRightExtent: CGFloat = 0
     private var limitRotationTimer: Timer?
     private var showsReset = false
     private var transitionToReset = false
@@ -139,7 +146,7 @@ final class BadgeView: ClickableBadge {
         guard usage.running else { return collapsedWidth }
         let width = (Usage.exact(usage.requestTokens) as NSString).size(withAttributes: [.font: numberFont]).width
         let captionWidth = (usage.requestCaption as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10, weight: .medium)]).width
-        return max(400, ceil(width + 296), ceil(captionWidth + 242))
+        return max(240, ceil(width + 136), ceil(captionWidth + 82)) + collapsedWidth
     }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     override func draw(_ dirtyRect: NSRect) {
@@ -147,7 +154,7 @@ final class BadgeView: ClickableBadge {
         func text(_ value: String, x: CGFloat, y: CGFloat, font: NSFont, color: NSColor) {
             (value as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: [.font: font, .foregroundColor: color])
         }
-        let small = NSFont.systemFont(ofSize: 10, weight: .medium)
+        let small = Self.limitCaptionFont
         let dividerX = bounds.width - Self.collapsedWidth
         if requestVisibility > 0, dividerX > 12, needsToDraw(NSRect(x: 0, y: 0, width: dividerX, height: bounds.height)) {
             NSGraphicsContext.saveGraphicsState()
@@ -159,7 +166,7 @@ final class BadgeView: ClickableBadge {
                 let count = countText
                 text(count, x: 57, y: 25, font: Self.numberFont, color: .labelColor)
                 let numberWidth = countWidth
-                text("токенов", x: 63 + numberWidth, y: 32, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)
+                text("тк", x: 63 + numberWidth, y: 32, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)
             }
             NSGraphicsContext.restoreGraphicsState()
         }
@@ -168,7 +175,20 @@ final class BadgeView: ClickableBadge {
             NSColor.separatorColor.withAlphaComponent(0.45 * requestVisibility).setFill()
             NSBezierPath(roundedRect: NSRect(x: dividerX, y: 17, width: 1, height: 26), xRadius: 0.5, yRadius: 0.5).fill()
         }
-        let ringX = dividerX + 17
+        if let days = resetDays(), measuredResetDays != days {
+            measuredResetDays = days
+            resetRightExtent = max(
+                28 + ("До сброса" as NSString).size(withAttributes: [.font: small]).width,
+                27 + (resetDaysText(days) as NSString).size(withAttributes: [.font: Self.numberFont]).width)
+        }
+        func rightExtent(reset: Bool) -> CGFloat {
+            reset && measuredResetDays != nil ? resetRightExtent : Self.limitRightExtent
+        }
+        var extent = rightExtent(reset: showsReset)
+        if let progress = limitTransitionProgress {
+            extent += (rightExtent(reset: transitionToReset) - extent) * progress
+        }
+        let ringX = dividerX + (Self.collapsedWidth - extent + 1.25) / 2
         let ring = NSBezierPath(ovalIn: NSRect(x: ringX, y: 22, width: 16, height: 16))
         ring.lineWidth = 2.5
         NSColor.tertiaryLabelColor.withAlphaComponent(0.2).setStroke(); ring.stroke()
