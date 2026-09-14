@@ -85,6 +85,10 @@ final class BadgeView: ClickableBadge {
             NSBezierPath(roundedRect: NSRect(x: 26, y: 29, width: 10, height: 2), xRadius: 1.5, yRadius: 1.5).fill()
             return
         }
+        let blueMix = CGFloat(max(0, min(1, (Double(usage?.requestTokens ?? 0) - 800_000) / 200_000)))
+        func heatColor(_ warm: NSColor, _ blue: NSColor) -> NSColor {
+            warm.blended(withFraction: blueMix, of: blue) ?? warm
+        }
         let sway = sin(phase) * (0.08 + strength * 0.09)
         let bounce = sin(phase * 1.9)
         let height = CGFloat(10 + 16 * strength + bounce * strength)
@@ -105,8 +109,8 @@ final class BadgeView: ClickableBadge {
         flame.curve(to: p(0.24, 0.56), controlPoint1: p(0.15, 0.45), controlPoint2: p(0.17, 0.53))
         flame.curve(to: p(0.53 + sway, 0), controlPoint1: p(0.42, 0.35), controlPoint2: p(0.28 + sway, 0.15))
         flame.close()
-        NSGradient(starting: NSColor(calibratedRed: 1, green: 0.24, blue: 0.08, alpha: 1),
-                   ending: NSColor(calibratedRed: 1, green: 0.58, blue: 0.07, alpha: 1))?.draw(in: flame, angle: 90)
+        NSGradient(starting: heatColor(NSColor(calibratedRed: 1, green: 0.24, blue: 0.08, alpha: 1), NSColor(calibratedRed: 0.12, green: 0.32, blue: 1, alpha: 1)),
+                   ending: heatColor(NSColor(calibratedRed: 1, green: 0.58, blue: 0.07, alpha: 1), NSColor(calibratedRed: 0.08, green: 0.68, blue: 1, alpha: 1)))?.draw(in: flame, angle: 90)
         let heart = NSBezierPath()
         heart.move(to: p(0.52 - sway*0.6, 0.30))
         heart.curve(to: p(0.75, 0.66), controlPoint1: p(0.46, 0.48), controlPoint2: p(0.76, 0.47))
@@ -115,20 +119,20 @@ final class BadgeView: ClickableBadge {
         heart.curve(to: p(0.20, 0.65), controlPoint1: p(0.25, 0.96), controlPoint2: p(0.08, 0.80))
         heart.curve(to: p(0.52 - sway*0.6, 0.30), controlPoint1: p(0.35, 0.65), controlPoint2: p(0.29, 0.48))
         heart.close()
-        NSGradient(starting: NSColor(calibratedRed: 1, green: 0.73, blue: 0.08, alpha: 1),
-                   ending: NSColor(calibratedRed: 1, green: 0.92, blue: 0.25, alpha: 1))?.draw(in: heart, angle: 90)
+        NSGradient(starting: heatColor(NSColor(calibratedRed: 1, green: 0.73, blue: 0.08, alpha: 1), .cyan),
+                   ending: heatColor(NSColor(calibratedRed: 1, green: 0.92, blue: 0.25, alpha: 1), NSColor(calibratedRed: 0.65, green: 0.94, blue: 1, alpha: 1)))?.draw(in: heart, angle: 90)
         let core = NSBezierPath()
         core.move(to: p(0.50 + sway*0.3, 0.59))
         core.curve(to: p(0.68, 0.84), controlPoint1: p(0.47, 0.72), controlPoint2: p(0.71, 0.73))
         core.curve(to: p(0.33, 0.84), controlPoint1: p(0.64, 0.98), controlPoint2: p(0.34, 0.98))
         core.curve(to: p(0.50 + sway*0.3, 0.59), controlPoint1: p(0.26, 0.73), controlPoint2: p(0.44, 0.73))
         core.close()
-        NSColor(calibratedRed: 1, green: 0.98, blue: 0.75, alpha: 1).setFill(); core.fill()
+        heatColor(NSColor(calibratedRed: 1, green: 0.98, blue: 0.75, alpha: 1), .white).setFill(); core.fill()
         if strength > 0.55 {
             for index in 0..<2 {
                 let cycle = (phase * 0.11 + Double(index) * 0.5).truncatingRemainder(dividingBy: 1)
                 let opacity = sin(cycle * .pi) * (strength-0.55) * 1.5
-                NSColor.systemOrange.withAlphaComponent(opacity).setFill()
+                heatColor(.systemOrange, .cyan).withAlphaComponent(opacity).setFill()
                 let x = 24 + CGFloat(index)*12 + CGFloat(sin(phase + Double(index)))
                 let y = max(9, origin.y + 5 - CGFloat(cycle) * 10)
                 NSBezierPath(ovalIn: NSRect(x: x, y: y, width: 1.5, height: 2)).fill()
