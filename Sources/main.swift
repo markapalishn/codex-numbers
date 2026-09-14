@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.title = "—"
         item.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         item.button?.toolTip = "Использование лимита Codex"
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 412, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 172, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
@@ -63,7 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !panel.setFrameUsingName("CodexNumbersPanel") {
             if let screen = NSScreen.main { panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX-590, y: screen.visibleFrame.minY+24)) }
         }
-        panel.setContentSize(NSSize(width: 412, height: 72))
+        panel.setContentSize(NSSize(width: 172, height: 72))
         panel.orderFrontRegardless()
         analytics = AnalyticsController()
         updateMenu()
@@ -114,6 +114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             example.running = count > 0
                             example.remainingLimit = 86
                             badge.usage = example
+                            badge.requestVisibility = example.running ? 1 : 0
+                            fitPanel(for: [example])
                             captureBadge("badge-" + name)
                         }
                         analytics.tabs.selectedSegment = 1
@@ -127,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         NSApp.terminate(nil)
                     }
                 }
-                guard let usage else { return }
+                let usage = usage ?? Usage()
                 current = usage
                 animateNumbers(to: usage.badgeUsage)
                 updateMenu()
@@ -143,26 +145,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.toolTip = "Использовано лимита Codex: \(used)"
     }
     func fitPanel(for usages: [Usage]) {
-        let width = usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 412
+        setPanelWidth(usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 172)
+    }
+    func setPanelWidth(_ width: CGFloat) {
         var frame = panel.frame
+        let right = frame.maxX
         frame.size.width = ceil(width)
+        frame.origin.x = right - frame.width
         if let screen = panel.screen ?? NSScreen.main {
             frame.origin.x = max(screen.visibleFrame.minX, min(frame.origin.x, screen.visibleFrame.maxX-frame.width))
         }
         panel.setFrame(frame, display: true)
+        badge.needsDisplay = true
     }
     func animateNumbers(to target: Usage) {
         numberAnimation?.invalidate()
         numberAnimation = nil
+        let targetWidth = BadgeView.preferredWidth(for: target) + 12
+        let targetVisibility: CGFloat = target.running ? 1 : 0
         guard let start = displayed,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              start.tokens != target.tokens || start.remainingLimit != target.remainingLimit else {
+              start.tokens != target.tokens || start.remainingLimit != target.remainingLimit ||
+              start.running != target.running || abs(panel.frame.width-targetWidth) > 0.5 else {
+            badge.requestVisibility = targetVisibility
             renderNumbers(target)
-            fitPanel(for: [target])
+            setPanelWidth(targetWidth)
             return
         }
-        // Reserve the larger endpoint width so the window stays still during counting.
-        fitPanel(for: [start, target])
+        let startWidth = panel.frame.width
+        let startVisibility = badge.requestVisibility
         let began = ProcessInfo.processInfo.systemUptime
         let animation = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
@@ -176,12 +187,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             frame.tokens.cached = interpolate(start.tokens.cached, target.tokens.cached)
             frame.tokens.output = interpolate(start.tokens.output, target.tokens.output)
             if let a = start.remainingLimit, let b = target.remainingLimit { frame.remainingLimit = interpolate(a, b) }
+            self.badge.requestVisibility = startVisibility + (targetVisibility-startVisibility) * CGFloat(eased)
+            self.setPanelWidth(startWidth + (targetWidth-startWidth) * CGFloat(eased))
             self.renderNumbers(frame)
             if progress >= 1 {
                 timer.invalidate()
                 self.numberAnimation = nil
+                self.badge.requestVisibility = targetVisibility
                 self.renderNumbers(target)
-                self.fitPanel(for: [target])
+                self.setPanelWidth(targetWidth)
                 self.panel.saveFrame(usingName: "CodexNumbersPanel")
             }
         }

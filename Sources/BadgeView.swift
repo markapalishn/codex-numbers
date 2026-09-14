@@ -7,9 +7,12 @@ final class BadgeView: ClickableBadge {
             updateFlameAnimation()
             let count = usage.map { Usage.exact($0.requestTokens) } ?? "—"
             let used = usage?.remainingLimit.map { "\(100 - $0)%" } ?? "—"
-            setAccessibilityLabel("Запрос: \(count) токенов. Использовано лимита: \(used). Открыть аналитику")
+            let request = usage?.running == true ? "Запрос: \(count) токенов. " : ""
+            setAccessibilityLabel(request + "Использовано лимита: \(used). Открыть аналитику")
         }
     }
+    var requestVisibility: CGFloat = 0 { didSet { needsDisplay = true } }
+    static let collapsedWidth: CGFloat = 160
     private var flameTimer: Timer?
     private var phase: Double = 0
     private var lastFlameFrame: TimeInterval = 0
@@ -49,6 +52,7 @@ final class BadgeView: ClickableBadge {
     override var isFlipped: Bool { true }
     static let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 19, weight: .semibold)
     static func preferredWidth(for usage: Usage) -> CGFloat {
+        guard usage.running else { return collapsedWidth }
         let width = (Usage.exact(usage.requestTokens) as NSString).size(withAttributes: [.font: numberFont]).width
         return max(400, ceil(width + 296))
     }
@@ -59,18 +63,26 @@ final class BadgeView: ClickableBadge {
             (value as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: [.font: font, .foregroundColor: color])
         }
         let small = NSFont.systemFont(ofSize: 10, weight: .medium)
-        drawFlame()
-        // Flame-only frames do not redraw or measure the text and limit ring.
-        if dirtyRect.maxX < 55 { return }
-        text(usage?.running == true ? "Запрос · в работе" : "Запрос", x: 58, y: 10, font: small, color: .secondaryLabelColor)
-        let count = usage.map { Usage.exact($0.requestTokens) } ?? "—"
-        text(count, x: 57, y: 25, font: Self.numberFont, color: .labelColor)
-        let numberWidth = (count as NSString).size(withAttributes: [.font: Self.numberFont]).width
-        text("токенов", x: 63 + numberWidth, y: 32, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)
-
-        let dividerX = bounds.width - 160
-        NSColor.separatorColor.withAlphaComponent(0.45).setFill()
-        NSBezierPath(roundedRect: NSRect(x: dividerX, y: 17, width: 1, height: 26), xRadius: 0.5, yRadius: 0.5).fill()
+        let dividerX = bounds.width - Self.collapsedWidth
+        if requestVisibility > 0, dividerX > 12 {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: NSRect(x: 0, y: 0, width: max(0, dividerX-12), height: bounds.height)).addClip()
+            NSGraphicsContext.current?.cgContext.setAlpha(requestVisibility)
+            drawFlame()
+            if dirtyRect.maxX >= 55 {
+                text(usage?.running == true ? "Запрос · в работе" : "Запрос", x: 58, y: 10, font: small, color: .secondaryLabelColor)
+                let count = usage.map { Usage.exact($0.requestTokens) } ?? "—"
+                text(count, x: 57, y: 25, font: Self.numberFont, color: .labelColor)
+                let numberWidth = (count as NSString).size(withAttributes: [.font: Self.numberFont]).width
+                text("токенов", x: 63 + numberWidth, y: 32, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        if dirtyRect.maxX < 55 && requestVisibility == 1 { return }
+        if requestVisibility > 0 {
+            NSColor.separatorColor.withAlphaComponent(0.45 * requestVisibility).setFill()
+            NSBezierPath(roundedRect: NSRect(x: dividerX, y: 17, width: 1, height: 26), xRadius: 0.5, yRadius: 0.5).fill()
+        }
         let ringX = dividerX + 17
         let ring = NSBezierPath(ovalIn: NSRect(x: ringX, y: 22, width: 16, height: 16))
         ring.lineWidth = 2.5
