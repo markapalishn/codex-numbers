@@ -138,6 +138,41 @@ check(controller.totalLabel.toolTip == Usage.exact(100 * 250) + " токенов
 controller.chart.hovered = 100
 controller.chart.buckets = []
 check(controller.chart.hovered == nil, "Shrinking a chart must clear an invalid hover index")
+// Content changes must never select a third width in either lifecycle state.
+var compactUsage = usage
+compactUsage.running = true
+compactUsage.tokens = Tokens(["input_tokens": 1])
+let compactWidth = BadgeView.preferredWidth(for: compactUsage)
+var largeUsage = compactUsage
+largeUsage.tokens = Tokens(["input_tokens": 1_000_000])
+let exactWidth = BadgeView.preferredWidth(for: largeUsage)
+check(compactWidth == exactWidth && exactWidth == BadgeView.expandedWidth, "All active counts must use one fixed width")
+largeUsage.isEstimate = true
+check(BadgeView.preferredWidth(for: largeUsage) == exactWidth, "The estimate marker must not resize the badge")
+var parallelUsage = compactUsage
+parallelUsage.activeRequestIDs = Set((0..<128).map { "parallel-\($0)" })
+check(BadgeView.preferredWidth(for: parallelUsage) == compactWidth, "Parallel requests must not resize the badge")
+for running in [false, true] {
+    for mode in TokenCountMode.allCases {
+        for count in [0, 999, 1_000, 999_999, 1_000_000, Int.max] {
+            for days: Double? in [nil, 0, 1, 7, 30, 999] {
+                var example = parallelUsage
+                example.running = running; example.countMode = mode
+                example.tokens = Tokens(["input_tokens": count])
+                example.limitResetAt = days.map { Date().addingTimeInterval($0 * 86400).timeIntervalSince1970 }
+                let expected = running ? BadgeView.expandedWidth : BadgeView.collapsedWidth
+                check(BadgeView.preferredWidth(for: example) == expected, "Only running status may determine width")
+            }
+        }
+    }
+}
+var hugeUsage = largeUsage
+hugeUsage.tokens = Tokens(["input_tokens": Int.max])
+for (name, example) in [("badge-compact", compactUsage), ("badge-estimate", largeUsage), ("badge-parallel", parallelUsage), ("badge-huge", hugeUsage)] {
+    badge.requestVisibility = 1; badge.usage = example
+    window.setContentSize(NSSize(width: BadgeView.preferredWidth(for: example), height: 60))
+    try capture(badge, name)
+}
 for (name, count) in [("badge-low", 10_000), ("badge-high", 1_000_000), ("badge-idle", 0)] {
     usage.tokens = Tokens(["input_tokens": count]); usage.running = count > 0
     badge.requestVisibility = usage.running ? 1 : 0
@@ -149,9 +184,18 @@ controller.close()
 usage.limitResetAt = Date().addingTimeInterval(3 * 86400).timeIntervalSince1970
 usage.limitWindowDuration = 7 * 86400
 badge.usage = usage
-pump(9.1)
+let resetDeadline = Date().addingTimeInterval(12)
+while badge.accessibilityLabel()?.contains("До сброса лимита") != true && Date() < resetDeadline {
+    pump(0.1)
+}
 check(badge.accessibilityLabel()?.contains("До сброса лимита") == true, "The limit transition must finish even when the flame is idle")
 try capture(badge, "badge-reset")
+let shortResetWidth = BadgeView.preferredWidth(for: usage)
+usage.limitResetAt = Date().addingTimeInterval(999 * 86400).timeIntervalSince1970
+badge.usage = usage
+check(BadgeView.preferredWidth(for: usage) == shortResetWidth && shortResetWidth == BadgeView.collapsedWidth, "Reset countdowns must not resize an idle badge")
+window.setContentSize(NSSize(width: BadgeView.preferredWidth(for: usage), height: 60))
+try capture(badge, "badge-long-reset")
 usage.limitResetAt = nil
 badge.usage = usage
 check(badge.accessibilityLabel()?.contains("Использовано лимита") == true, "Removing reset data must restore the usage caption")

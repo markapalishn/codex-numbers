@@ -61,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             surface.addSubview(glass)
         }
         if !panel.setFrameUsingName("CodexNumbersPanel") {
-            if let screen = NSScreen.main { panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX-590, y: screen.visibleFrame.minY+24)) }
+            if let screen = NSScreen.main { panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX-panel.frame.width-24, y: screen.visibleFrame.minY+24)) }
         }
         panel.setContentSize(NSSize(width: BadgeView.collapsedWidth + 12, height: 72))
         panel.orderFrontRegardless()
@@ -210,7 +210,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             frame.tokens.output = interpolate(start.tokens.output, target.tokens.output)
             if let a = start.remainingLimit, let b = target.remainingLimit { frame.remainingLimit = interpolate(a, b) }
             self.badge.requestVisibility = startVisibility + (targetVisibility-startVisibility) * CGFloat(eased)
-            self.setPanelWidth(startWidth + (targetWidth-startWidth) * CGFloat(eased))
+            if startWidth != targetWidth {
+                self.setPanelWidth(startWidth + (targetWidth-startWidth) * CGFloat(eased))
+            }
             self.renderNumbers(frame)
             if progress >= 1 {
                 self.badge.requestVisibility = targetVisibility

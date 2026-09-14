@@ -3,15 +3,17 @@ import AppKit
 final class BadgeView: ClickableBadge {
     var usage: Usage? {
         didSet {
+            updateLimitLayout()
             if oldValue?.requestTokens != usage?.requestTokens || oldValue?.requestCaption != usage?.requestCaption || oldValue?.isEstimate != usage?.isEstimate {
-                setNeedsDisplay(NSRect(x: 0, y: 0, width: max(0, bounds.width - Self.collapsedWidth), height: bounds.height))
+                setNeedsDisplay(NSRect(x: 0, y: 0, width: max(0, bounds.width - limitWidth), height: bounds.height))
             }
             if oldValue?.remainingLimit != usage?.remainingLimit || oldValue?.limitResetAt != usage?.limitResetAt || oldValue?.limitWindowDuration != usage?.limitWindowDuration {
                 invalidateLimit()
             }
             if oldValue?.requestTokens != usage?.requestTokens || oldValue?.isEstimate != usage?.isEstimate {
                 countText = usage.map { ($0.isEstimate ? "≈" : "") + Usage.exact($0.requestTokens) } ?? "—"
-                countWidth = (countText as NSString).size(withAttributes: [.font: Self.numberFont]).width
+                countFont = Self.fittedNumberFont(for: countText, width: Self.requestNumberWidth)
+                countWidth = (countText as NSString).size(withAttributes: [.font: countFont]).width
             }
             updateLimitRotation()
             updateAnimation()
@@ -22,14 +24,23 @@ final class BadgeView: ClickableBadge {
     /// Returns true while the finite counter/resize transition is still running.
     var numberFrame: ((TimeInterval, Bool) -> Bool)? { didSet { updateAnimation() } }
     var canAnimate: Bool { clock.canAnimate }
+    // Only lifecycle changes select a different width; content never resizes the badge.
+    private static let contentPadding: CGFloat = 16
+    private static let requestTextX: CGFloat = 57
+    private static let captionAdjustment: CGFloat = 1
+    private static let unitGap: CGFloat = 6
+    private static let unitText = "тк"
+    private static let unitFont = NSFont.systemFont(ofSize: 10)
+    private static let unitWidth = (unitText as NSString).size(withAttributes: [.font: unitFont]).width
     private static let limitCaptionFont = NSFont.systemFont(ofSize: 10, weight: .medium)
-    private static let limitRightExtent = max(
-        28 + ("Использовано" as NSString).size(withAttributes: [.font: limitCaptionFont]).width,
-        27 + ("100%" as NSString).size(withAttributes: [.font: numberFont]).width)
-    // Include the ring's stroke so the visible content has equal outer padding.
-    static let collapsedWidth = ceil(16 * 2 + 1.25 + limitRightExtent)
+    static let collapsedWidth: CGFloat = 144
+    static let expandedWidth: CGFloat = 384
+    private let limitWidth = collapsedWidth
+    private static let ringInset = contentPadding + 1.25
+    private static let limitNumberWidth = collapsedWidth - ringInset - 27 - contentPadding
+    private static let requestNumberWidth = expandedWidth - collapsedWidth - requestTextX - unitGap - unitWidth - contentPadding
     private var measuredResetDays: Int?
-    private var resetRightExtent: CGFloat = 0
+    private var resetNumberFont = numberFont
     private var limitRotationTimer: Timer?
     private var showsReset = false
     private var transitionToReset = false
@@ -39,6 +50,7 @@ final class BadgeView: ClickableBadge {
     private var accessibilityText = ""
     private var countText = "—"
     private var countWidth: CGFloat = 0
+    private var countFont = numberFont
     private var gradientMix: CGFloat = -1
     private var flameGradient: NSGradient?
     private var heartGradient: NSGradient?
@@ -53,7 +65,7 @@ final class BadgeView: ClickableBadge {
         environmentChanged()
     }
     private func invalidateLimit() {
-        setNeedsDisplay(NSRect(x: max(0, bounds.width - Self.collapsedWidth), y: 0, width: Self.collapsedWidth, height: bounds.height))
+        setNeedsDisplay(NSRect(x: max(0, bounds.width - limitWidth), y: 0, width: limitWidth, height: bounds.height))
     }
     private func environmentChanged() {
         if !canAnimate {
@@ -120,21 +132,42 @@ final class BadgeView: ClickableBadge {
         invalidateLimit()
         updateAccessibilityLabel()
     }
-    private func resetDays() -> Int? {
+    private static func resetDays(for usage: Usage?, now: Date = Date()) -> Int? {
         guard let reset = usage?.limitResetAt else { return nil }
-        return max(0, Int(ceil((reset - Date().timeIntervalSince1970) / 86_400)))
+        return max(0, Int(ceil((reset - now.timeIntervalSince1970) / 86_400)))
     }
-    private func resetDaysText(_ days: Int) -> String {
+    private func resetDays() -> Int? { Self.resetDays(for: usage) }
+    private static func resetDaysText(_ days: Int) -> String {
         let lastTwo = days % 100
         let ending = (11...14).contains(lastTwo) ? "дней" : (days % 10 == 1 ? "день" : ((2...4).contains(days % 10) ? "дня" : "дней"))
         return "\(days) \(ending)"
+    }
+    private static func fittedNumberFont(for text: String, width: CGFloat) -> NSFont {
+        var font = numberFont
+        var measured = (text as NSString).size(withAttributes: [.font: font]).width
+        // System fonts may use different optical metrics at smaller sizes.
+        // Measure the resulting font as well, rather than assuming linear scaling.
+        while measured > width {
+            let size = floor(font.pointSize * width / measured * 10) / 10
+            guard size > 0, size < font.pointSize else { break }
+            font = .monospacedDigitSystemFont(ofSize: size, weight: .semibold)
+            measured = (text as NSString).size(withAttributes: [.font: font]).width
+        }
+        return font
+    }
+    private func updateLimitLayout() {
+        let days = resetDays()
+        guard measuredResetDays != days else { return }
+        measuredResetDays = days
+        resetNumberFont = Self.fittedNumberFont(for: days.map { Self.resetDaysText($0) } ?? "—", width: Self.limitNumberWidth)
+        invalidateLimit()
     }
     private func updateAccessibilityLabel() {
         let count = countText
         let used = usage?.remainingLimit.map { "\(100 - $0)%" } ?? "—"
         let request = usage?.running == true ? "\(usage!.requestCaption): \(count) токенов. " : ""
         let limit = showsReset && resetDays() != nil
-            ? "До сброса лимита: \(resetDaysText(resetDays()!)). "
+            ? "До сброса лимита: \(Self.resetDaysText(resetDays()!)). "
             : "Использовано лимита: \(used). "
         let label = request + limit + "Открыть аналитику"
         if label != accessibilityText { accessibilityText = label; setAccessibilityLabel(label) }
@@ -143,10 +176,7 @@ final class BadgeView: ClickableBadge {
     override var isFlipped: Bool { true }
     static let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 19, weight: .semibold)
     static func preferredWidth(for usage: Usage) -> CGFloat {
-        guard usage.running else { return collapsedWidth }
-        let width = (Usage.exact(usage.requestTokens) as NSString).size(withAttributes: [.font: numberFont]).width
-        let captionWidth = (usage.requestCaption as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10, weight: .medium)]).width
-        return max(240, ceil(width + 136), ceil(captionWidth + 82)) + collapsedWidth
+        usage.running ? expandedWidth : collapsedWidth
     }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     override func draw(_ dirtyRect: NSRect) {
@@ -155,40 +185,27 @@ final class BadgeView: ClickableBadge {
             (value as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: [.font: font, .foregroundColor: color])
         }
         let small = Self.limitCaptionFont
-        let dividerX = bounds.width - Self.collapsedWidth
+        let dividerX = bounds.width - limitWidth
         if requestVisibility > 0, dividerX > 12, needsToDraw(NSRect(x: 0, y: 0, width: dividerX, height: bounds.height)) {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: NSRect(x: 0, y: 0, width: max(0, dividerX-12), height: bounds.height)).addClip()
             NSGraphicsContext.current?.cgContext.setAlpha(requestVisibility)
             if needsToDraw(NSRect(x: 12, y: 5, width: 39, height: 49)) { drawFlame() }
-            if needsToDraw(NSRect(x: 55, y: 0, width: max(0, dividerX - 55), height: bounds.height)) {
-                text(usage?.requestCaption ?? "Запрос", x: 58, y: 10, font: small, color: .secondaryLabelColor)
+            if needsToDraw(NSRect(x: Self.requestTextX - 2, y: 0, width: max(0, dividerX - Self.requestTextX + 2), height: bounds.height)) {
+                text(usage?.requestCaption ?? "Запрос", x: Self.requestTextX + Self.captionAdjustment, y: 10, font: small, color: .secondaryLabelColor)
                 let count = countText
-                text(count, x: 57, y: 25, font: Self.numberFont, color: .labelColor)
+                text(count, x: Self.requestTextX, y: 25 + Self.numberFont.ascender - countFont.ascender, font: countFont, color: .labelColor)
                 let numberWidth = countWidth
-                text("тк", x: 63 + numberWidth, y: 32, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)
+                text(Self.unitText, x: Self.requestTextX + numberWidth + Self.unitGap, y: 32, font: Self.unitFont, color: .secondaryLabelColor)
             }
             NSGraphicsContext.restoreGraphicsState()
         }
-        guard needsToDraw(NSRect(x: dividerX, y: 0, width: Self.collapsedWidth, height: bounds.height)) else { return }
+        guard needsToDraw(NSRect(x: dividerX, y: 0, width: limitWidth, height: bounds.height)) else { return }
         if requestVisibility > 0 {
             NSColor.separatorColor.withAlphaComponent(0.45 * requestVisibility).setFill()
             NSBezierPath(roundedRect: NSRect(x: dividerX, y: 17, width: 1, height: 26), xRadius: 0.5, yRadius: 0.5).fill()
         }
-        if let days = resetDays(), measuredResetDays != days {
-            measuredResetDays = days
-            resetRightExtent = max(
-                28 + ("До сброса" as NSString).size(withAttributes: [.font: small]).width,
-                27 + (resetDaysText(days) as NSString).size(withAttributes: [.font: Self.numberFont]).width)
-        }
-        func rightExtent(reset: Bool) -> CGFloat {
-            reset && measuredResetDays != nil ? resetRightExtent : Self.limitRightExtent
-        }
-        var extent = rightExtent(reset: showsReset)
-        if let progress = limitTransitionProgress {
-            extent += (rightExtent(reset: transitionToReset) - extent) * progress
-        }
-        let ringX = dividerX + (Self.collapsedWidth - extent + 1.25) / 2
+        let ringX = dividerX + Self.ringInset
         let ring = NSBezierPath(ovalIn: NSRect(x: ringX, y: 22, width: 16, height: 16))
         ring.lineWidth = 2.5
         NSColor.tertiaryLabelColor.withAlphaComponent(0.2).setStroke(); ring.stroke()
@@ -228,7 +245,7 @@ final class BadgeView: ClickableBadge {
             NSGraphicsContext.current?.cgContext.setAlpha(alpha)
             if reset, let days = resetDays() {
                 text("До сброса", x: ringX + 28, y: 10 + offset, font: small, color: .secondaryLabelColor)
-                text(resetDaysText(days), x: ringX + 27, y: 25 + offset, font: Self.numberFont, color: .labelColor)
+                text(Self.resetDaysText(days), x: ringX + 27, y: 25 + offset + Self.numberFont.ascender - resetNumberFont.ascender, font: resetNumberFont, color: .labelColor)
             } else {
                 text("Использовано", x: ringX + 28, y: 10 + offset, font: small, color: .secondaryLabelColor)
                 text(used.map { "\($0)%" } ?? "—", x: ringX + 27, y: 25 + offset, font: Self.numberFont, color: .labelColor)
