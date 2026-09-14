@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let queue = DispatchQueue(label: "local.codex-numbers.reader", qos: .utility)
     let monitor = UsageMonitor(root: URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory()+"/.codex").appendingPathComponent("sessions"))
     var polling = false
+    var analytics: AnalyticsController!
+    var previewExported = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -30,7 +32,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         surface.autoresizingMask = [.width, .height]
         panel.contentView = surface
         let glassFrame = surface.bounds.insetBy(dx: 6, dy: 6)
-        let content = NSView(frame: NSRect(origin: .zero, size: glassFrame.size))
+        let content = ClickableBadge(frame: NSRect(origin: .zero, size: glassFrame.size))
+        content.onClick = { [weak self] in self?.showAnalytics() }
+        content.setAccessibilityElement(true)
+        content.setAccessibilityRole(.button)
+        content.setAccessibilityLabel("Открыть аналитику расхода Codex")
+        content.toolTip = "Нажмите для аналитики · потяните, чтобы переместить"
         content.autoresizingMask = [.width, .height]
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView(frame: glassFrame)
@@ -66,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         panel.setContentSize(NSSize(width: panel.frame.width, height: 52))
         if !UserDefaults.standard.bool(forKey: "panelHidden") { panel.orderFrontRegardless() }
+        analytics = AnalyticsController()
         updateMenu()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
@@ -75,8 +83,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         polling = true
         queue.async { [self] in
             let usage = monitor.poll()
+            let samples = monitor.analyticsSamples()
             DispatchQueue.main.async { [self] in
                 polling = false
+                analytics.update(samples)
+                if let flag = CommandLine.arguments.firstIndex(of: "--preview"),
+                   CommandLine.arguments.indices.contains(flag + 1), !previewExported {
+                    previewExported = true
+                    analytics.present(near: panel)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+                        guard let view = analytics.exportView else { NSApp.terminate(nil); return }
+                        view.wantsLayer = true
+                        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+                        let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+                        func capture(_ url: URL) {
+                            view.layoutSubtreeIfNeeded()
+                            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                                view.cacheDisplay(in: view.bounds, to: bitmap)
+                                if let png = bitmap.representation(using: .png, properties: [:]) { try? png.write(to: url) }
+                            }
+                        }
+                        capture(output)
+                        analytics.tabs.selectedSegment = 1
+                        analytics.rebuild()
+                        capture(output.deletingPathExtension().appendingPathExtension("models.png"))
+                        if !analytics.groupKeys.isEmpty {
+                            let selected = NSButton(); selected.tag = 0
+                            analytics.selectGroup(selected)
+                            capture(output.deletingPathExtension().appendingPathExtension("requests.png"))
+                        }
+                        NSApp.terminate(nil)
+                    }
+                }
                 guard let usage else { return }
                 current = usage
                 animateNumbers(to: usage)
@@ -89,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func renderNumbers(_ usage: Usage) {
         displayed = usage
         label.stringValue = (usage.running ? "↻ " : "") + usage.line
-        item.button?.title = "◈ " + Usage.format(usage.tokens.input) + (usage.running ? " ↻" : "")
+        item.button?.title = "◈ " + Usage.format(usage.requestTokens) + (usage.running ? " ↻" : "")
     }
     func fitPanel(for usages: [Usage]) {
         let font = label.font ?? NSFont.systemFont(ofSize: 12)
@@ -108,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         numberAnimation = nil
         guard let start = displayed,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              start.tokens != target.tokens || start.context != target.context else {
+              start.tokens != target.tokens || start.remainingLimit != target.remainingLimit else {
             renderNumbers(target)
             fitPanel(for: [target])
             return
@@ -127,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             frame.tokens.input = interpolate(start.tokens.input, target.tokens.input)
             frame.tokens.cached = interpolate(start.tokens.cached, target.tokens.cached)
             frame.tokens.output = interpolate(start.tokens.output, target.tokens.output)
-            if let a = start.context, let b = target.context { frame.context = interpolate(a, b) }
+            if let a = start.remainingLimit, let b = target.remainingLimit { frame.remainingLimit = interpolate(a, b) }
             self.renderNumbers(frame)
             if progress >= 1 {
                 timer.invalidate()
@@ -148,12 +186,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             info(u.line)
         }
         menu.addItem(.separator())
+        let details = menu.addItem(withTitle: "Аналитика", action: #selector(showAnalytics), keyEquivalent: "")
+        details.target = self
         let toggle = menu.addItem(withTitle: panel.isVisible ? "Скрыть индикатор" : "Показать индикатор", action: #selector(togglePanel), keyEquivalent: "")
         toggle.target = self
         let reset = menu.addItem(withTitle: "Вернуть индикатор на экран", action: #selector(resetPanel), keyEquivalent: ""); reset.target = self
         let quit = menu.addItem(withTitle: "Завершить Codex Numbers", action: #selector(quitApp), keyEquivalent: "q"); quit.target = self
         item.menu = menu
     }
+    @objc func showAnalytics() { analytics.present(near: panel) }
     @objc func togglePanel() {
         if panel.isVisible { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
         UserDefaults.standard.set(!panel.isVisible, forKey: "panelHidden"); updateMenu()

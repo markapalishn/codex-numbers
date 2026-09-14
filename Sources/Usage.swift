@@ -15,7 +15,7 @@ struct Tokens: Equatable {
 
 struct Usage {
     var tokens = Tokens()
-    var context: Int?
+    var remainingLimit: Int?
     var timestamp = ""
     var running = false
     var project = "Codex"
@@ -29,8 +29,40 @@ struct Usage {
         }
         return String(format: "%.2f", Double(n)/1_000_000).replacingOccurrences(of: ".", with: ",") + " млн"
     }
+    var requestTokens: Int { tokens.input + tokens.output }
+    private static let integerFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.groupingSeparator = " "
+        formatter.maximumFractionDigits = 0
+        return formatter
+    }()
+    static func exact(_ value: Int) -> String { integerFormatter.string(from: NSNumber(value: value)) ?? "\(value)" }
     var line: String {
-        "\(Self.format(tokens.input)) отправлено · \(Self.format(tokens.cached)) из кэша · \(Self.format(tokens.output)) получено · контекст \(context.map { "≈\($0)%" } ?? "—")"
+        let count = Self.exact(requestTokens)
+        return "Запрос: \(count) токенов · Остаток лимита: \(remainingLimit.map { "\($0)%" } ?? "—")"
+    }
+}
+
+struct LimitSnapshot {
+    var timestamp: String
+    var windows: [(used: Double, resets: Double)]
+    init?(_ raw: [String: Any], timestamp: String) {
+        guard raw["limit_id"] as? String == "codex" || raw["limit_id"] == nil else { return nil }
+        self.timestamp = timestamp
+        windows = ["primary", "secondary"].compactMap { key in
+            guard let window = raw[key] as? [String: Any],
+                  let used = window["used_percent"] as? Double,
+                  let resets = window["resets_at"] as? Double,
+                  used.isFinite, resets.isFinite else { return nil }
+            return (used, resets)
+        }
+    }
+    func remaining(now: Double = Date().timeIntervalSince1970) -> Int? {
+        // A passed reset needs fresh server data; don't invent a full allowance.
+        guard !windows.isEmpty, windows.allSatisfy({ $0.resets > now }) else { return nil }
+        return windows.map { Int(max(0, min(100, 100 - $0.used)).rounded(.down)) }.min()
     }
 }
 
@@ -43,7 +75,12 @@ final class SessionReader {
     var hasTurn = false
     var turnHasUsage = false
     var isChild = false
-    var lastSize: UInt64 = 0
+    var limit: LimitSnapshot?
+    var samples: [TokenSample] = []
+    var model = "Неизвестная модель"
+    var projectPath = ""
+    var turnID = ""
+
 
     func consume(_ data: Data) {
         pending.append(data)
@@ -56,21 +93,33 @@ final class SessionReader {
     func consume(_ obj: [String: Any]) {
         guard let p = obj["payload"] as? [String: Any] else { return }
         if obj["type"] as? String == "session_meta" {
+            projectPath = p["cwd"] as? String ?? ""
             current.project = (p["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Codex"
             current.session = p["id"] as? String ?? ""
             if let source = p["source"] as? [String: Any], source["subagent"] != nil { isChild = true }
+            return
+        }
+        if obj["type"] as? String == "turn_context" {
+            model = p["model"] as? String ?? model
+            turnID = p["turn_id"] as? String ?? turnID
+            if let cwd = p["cwd"] as? String {
+                projectPath = cwd
+                current.project = URL(fileURLWithPath: cwd).lastPathComponent
+            }
             return
         }
         guard obj["type"] as? String == "event_msg" else { return }
         let stamp = obj["timestamp"] as? String ?? ""
         switch p["type"] as? String {
         case "task_started":
+            turnID = p["turn_id"] as? String ?? "\(current.session):\(stamp)"
             current.tokens = Tokens(); current.running = true; hasTurn = true; turnHasUsage = false
         case "task_complete", "turn_aborted":
             current.running = false
             if hasTurn, turnHasUsage { current.timestamp = stamp; usage = current }
             hasTurn = false
         case "token_count":
+            if let raw = p["rate_limits"] as? [String: Any], let snapshot = LimitSnapshot(raw, timestamp: stamp) { limit = snapshot }
             guard let info = p["info"] as? [String: Any], let raw = info["total_token_usage"] as? [String: Any] else { return }
             let next = Tokens(raw)
             // Totals make duplicate token events idempotent. A reset starts a new counter epoch.
@@ -79,10 +128,12 @@ final class SessionReader {
             guard delta != Tokens() else { return }
             if !hasTurn { current.tokens = Tokens(); hasTurn = true }
             current.tokens.add(delta); turnHasUsage = true
-            if let last = info["last_token_usage"] as? [String: Any], let window = info["model_context_window"] as? Int, window > 0 {
-                let used = last["total_tokens"] as? Int ?? ((last["input_tokens"] as? Int ?? 0) + (last["output_tokens"] as? Int ?? 0))
-                current.context = min(100, max(0, Int((Double(used) / Double(window) * 100).rounded())))
-            } else { current.context = nil }
+            if let date = TokenSample.parseDate(stamp) {
+                let request = turnID.isEmpty ? "\(current.session):\(stamp)" : turnID
+                samples.append(TokenSample(id: "\(request)|\(stamp)|\(next.input)|\(next.output)",
+                    request: request, date: date, project: current.project,
+                    projectPath: projectPath, model: model, tokens: delta))
+            }
             current.timestamp = stamp; usage = current
         default: break
         }
@@ -91,7 +142,7 @@ final class SessionReader {
         guard let f = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? f.close() }
         guard let size = try? f.seekToEnd() else { return }
-        if size < offset { offset = 0; pending = Data(); total = Tokens(); usage = nil; hasTurn = false }
+        if size < offset { offset = 0; pending = Data(); total = Tokens(); usage = nil; hasTurn = false; turnHasUsage = false; samples = []; limit = nil; model = "Неизвестная модель"; turnID = "" }
         guard size > offset else { return }
         do {
             try f.seek(toOffset: offset)
@@ -104,6 +155,11 @@ final class UsageMonitor {
     let root: URL
     var readers: [URL: SessionReader] = [:]
     init(root: URL) { self.root = root }
+    func analyticsSamples() -> [TokenSample] {
+        var seen = Set<String>()
+        return readers.values.filter { !$0.isChild }.flatMap(\.samples)
+            .filter { seen.insert($0.id).inserted }.sorted { $0.date < $1.date }
+    }
     func poll() -> Usage? {
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
         guard let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return nil }
@@ -119,6 +175,8 @@ final class UsageMonitor {
             let reader = readers[url]!
             if reader.offset != UInt64(size) { reader.read(url) }
         }
-        return readers.values.filter { !$0.isChild }.compactMap(\.usage).max { $0.timestamp < $1.timestamp }
+        var latest = readers.values.filter { !$0.isChild }.compactMap(\.usage).max { $0.timestamp < $1.timestamp }
+        latest?.remainingLimit = readers.values.compactMap(\.limit).max { $0.timestamp < $1.timestamp }?.remaining()
+        return latest
     }
 }
