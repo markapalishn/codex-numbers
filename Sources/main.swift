@@ -3,7 +3,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var item: NSStatusItem!
     var panel: NSPanel!
-    var label: NSTextField!
+    var badge: BadgeView!
     var timer: Timer?
     var current: Usage?
     var displayed: Usage?
@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "◈ —"
         item.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 570, height: 52), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 412, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
@@ -32,7 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         surface.autoresizingMask = [.width, .height]
         panel.contentView = surface
         let glassFrame = surface.bounds.insetBy(dx: 6, dy: 6)
-        let content = ClickableBadge(frame: NSRect(origin: .zero, size: glassFrame.size))
+        let content = BadgeView(frame: NSRect(origin: .zero, size: glassFrame.size))
+        badge = content
         content.onClick = { [weak self] in self?.showAnalytics() }
         content.setAccessibilityElement(true)
         content.setAccessibilityRole(.button)
@@ -42,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView(frame: glassFrame)
             glass.style = .regular
-            glass.cornerRadius = 20
+            glass.cornerRadius = 30
             glass.autoresizingMask = [.width, .height]
             glass.contentView = content
             surface.addSubview(glass)
@@ -52,26 +53,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             glass.blendingMode = .behindWindow
             glass.state = .active
             glass.wantsLayer = true
-            glass.layer?.cornerRadius = 20
+            glass.layer?.cornerRadius = 30
             glass.layer?.masksToBounds = true
             glass.autoresizingMask = [.width, .height]
             glass.addSubview(content)
             surface.addSubview(glass)
         }
-        label = NSTextField(labelWithString: "Codex · ожидание данных…")
-        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        label.textColor = .labelColor
-        label.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
-            label.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
-            label.centerYAnchor.constraint(equalTo: content.centerYAnchor)
-        ])
         if !panel.setFrameUsingName("CodexNumbersPanel") {
             if let screen = NSScreen.main { panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX-590, y: screen.visibleFrame.minY+24)) }
         }
-        panel.setContentSize(NSSize(width: panel.frame.width, height: 52))
+        panel.setContentSize(NSSize(width: 412, height: 72))
         if !UserDefaults.standard.bool(forKey: "panelHidden") { panel.orderFrontRegardless() }
         analytics = AnalyticsController()
         updateMenu()
@@ -104,6 +95,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         }
                         capture(output)
+                        badge.wantsLayer = true
+                        badge.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+                        badge.layer?.cornerRadius = 30
+                        if let bitmap = badge.bitmapImageRepForCachingDisplay(in: badge.bounds) {
+                            badge.cacheDisplay(in: badge.bounds, to: bitmap)
+                            if let png = bitmap.representation(using: .png, properties: [:]) {
+                                try? png.write(to: output.deletingPathExtension().appendingPathExtension("badge.png"))
+                            }
+                        }
                         analytics.tabs.selectedSegment = 1
                         analytics.rebuild()
                         capture(output.deletingPathExtension().appendingPathExtension("models.png"))
@@ -126,16 +126,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func renderNumbers(_ usage: Usage) {
         displayed = usage
-        label.stringValue = (usage.running ? "↻ " : "") + usage.line
+        badge.usage = usage
         item.button?.title = "◈ " + Usage.format(usage.requestTokens) + (usage.running ? " ↻" : "")
     }
     func fitPanel(for usages: [Usage]) {
-        let font = label.font ?? NSFont.systemFont(ofSize: 12)
-        let width = usages.map {
-            ((($0.running ? "↻ " : "") + $0.line) as NSString).size(withAttributes: [.font: font]).width + 48
-        }.max() ?? 450
+        let width = usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 412
         var frame = panel.frame
-        frame.size.width = max(450, ceil(width))
+        frame.size.width = ceil(width)
         if let screen = panel.screen ?? NSScreen.main {
             frame.origin.x = max(screen.visibleFrame.minX, min(frame.origin.x, screen.visibleFrame.maxX-frame.width))
         }

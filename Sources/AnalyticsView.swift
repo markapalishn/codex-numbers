@@ -1,6 +1,6 @@
 import AppKit
 
-final class ClickableBadge: NSView {
+class ClickableBadge: NSView {
     var onClick: (() -> Void)?
     override var mouseDownCanMoveWindow: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(point) ? self : nil }
