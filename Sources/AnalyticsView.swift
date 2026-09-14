@@ -164,9 +164,6 @@ final class AnalyticsController: NSWindowController {
         stack.addArrangedSubview(scroll)
         scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
-        let foot = NSTextField(labelWithString: "Локальные журналы · без дочерних задач")
-        foot.font = .systemFont(ofSize: 10); foot.textColor = .tertiaryLabelColor
-        stack.addArrangedSubview(foot)
         rebuild()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
