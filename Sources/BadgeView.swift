@@ -3,19 +3,78 @@ import AppKit
 final class BadgeView: ClickableBadge {
     var usage: Usage? {
         didSet {
-            needsDisplay = true
-            updateFlameAnimation()
-            let count = usage.map { ($0.isEstimate ? "≈" : "") + Usage.exact($0.requestTokens) } ?? "—"
-            let used = usage?.remainingLimit.map { "\(100 - $0)%" } ?? "—"
-            let request = usage?.running == true ? "Запрос: \(count) токенов. " : ""
-            setAccessibilityLabel(request + "Использовано лимита: \(used). Открыть аналитику")
+            if oldValue?.requestTokens != usage?.requestTokens || oldValue?.requestCaption != usage?.requestCaption || oldValue?.isEstimate != usage?.isEstimate {
+                setNeedsDisplay(NSRect(x: 0, y: 0, width: max(0, bounds.width - Self.collapsedWidth), height: bounds.height))
+            }
+            if oldValue?.remainingLimit != usage?.remainingLimit || oldValue?.limitResetAt != usage?.limitResetAt || oldValue?.limitWindowDuration != usage?.limitWindowDuration {
+                invalidateLimit()
+            }
+            if oldValue?.requestTokens != usage?.requestTokens || oldValue?.isEstimate != usage?.isEstimate {
+                countText = usage.map { ($0.isEstimate ? "≈" : "") + Usage.exact($0.requestTokens) } ?? "—"
+                countWidth = (countText as NSString).size(withAttributes: [.font: Self.numberFont]).width
+            }
+            updateLimitRotation()
+            updateAnimation()
+            updateAccessibilityLabel()
         }
     }
-    var requestVisibility: CGFloat = 0 { didSet { needsDisplay = true } }
+    var requestVisibility: CGFloat = 0 { didSet { if oldValue != requestVisibility { needsDisplay = true; updateAnimation() } } }
+    /// Returns true while the finite counter/resize transition is still running.
+    var numberFrame: ((TimeInterval, Bool) -> Bool)? { didSet { updateAnimation() } }
+    var canAnimate: Bool { clock.canAnimate }
     static let collapsedWidth: CGFloat = 160
-    private var flameTimer: Timer?
+    private var limitRotationTimer: Timer?
+    private var showsReset = false
+    private var transitionToReset = false
+    private var limitTransitionProgress: CGFloat?
+    private var limitTransitionStart: TimeInterval?
     private var phase: Double = 0
-    private var lastFlameFrame: TimeInterval = 0
+    private var accessibilityText = ""
+    private var countText = "—"
+    private var countWidth: CGFloat = 0
+    private var gradientMix: CGFloat = -1
+    private var flameGradient: NSGradient?
+    private var heartGradient: NSGradient?
+    private lazy var clock: AnimationClock = {
+        let clock = AnimationClock(view: self)
+        clock.onFrame = { [weak self] now, elapsed in self?.advance(now: now, elapsed: elapsed) }
+        clock.onEnvironmentChange = { [weak self] in self?.environmentChanged() }
+        return clock
+    }()
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        environmentChanged()
+    }
+    private func invalidateLimit() {
+        setNeedsDisplay(NSRect(x: max(0, bounds.width - Self.collapsedWidth), y: 0, width: Self.collapsedWidth, height: bounds.height))
+    }
+    private func environmentChanged() {
+        if !canAnimate {
+            _ = numberFrame?(ProcessInfo.processInfo.systemUptime, true)
+            numberFrame = nil
+            finishLimitTransition()
+        }
+        updateLimitRotation()
+        updateAnimation()
+        needsDisplay = true
+    }
+    private func updateAnimation() {
+        clock.setActive(numberFrame != nil || limitTransitionStart != nil || (intensity > 0 && requestVisibility > 0))
+    }
+    private func advance(now: TimeInterval, elapsed: TimeInterval) {
+        if let frame = numberFrame, !frame(now, false) { numberFrame = nil }
+        if let began = limitTransitionStart {
+            let progress = min(1, (now - began) / 0.48)
+            limitTransitionProgress = CGFloat(1 - pow(1 - progress, 3))
+            invalidateLimit()
+            if progress >= 1 { finishLimitTransition() }
+        }
+        if intensity > 0 && requestVisibility > 0 {
+            phase += elapsed * (3 + intensity * 4.5)
+            setNeedsDisplay(NSRect(x: 12, y: 5, width: 39, height: 49))
+        }
+        updateAnimation()
+    }
     private var intensity: Double {
         let count = Double(usage?.requestTokens ?? 0)
         guard count > 0 else { return 0 }
@@ -26,35 +85,61 @@ final class BadgeView: ClickableBadge {
         }
         return 1
     }
-    private func updateFlameAnimation() {
-        let animate = intensity > 0 && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if !animate { flameTimer?.invalidate(); flameTimer = nil; phase = 0; return }
-        guard flameTimer == nil else { return }
-        lastFlameFrame = ProcessInfo.processInfo.systemUptime
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                self.flameTimer?.invalidate(); self.flameTimer = nil; self.phase = 0; self.needsDisplay = true; return
+    private func updateLimitRotation() {
+        guard usage?.limitResetAt != nil, clock.isVisible else {
+            limitRotationTimer?.invalidate(); limitRotationTimer = nil
+            if usage?.limitResetAt == nil {
+                limitTransitionStart = nil; limitTransitionProgress = nil; showsReset = false
             }
-            let now = ProcessInfo.processInfo.systemUptime
-            let elapsed = min(1.0 / 15, max(0, now - self.lastFlameFrame))
-            self.lastFlameFrame = now
-            guard self.window?.isVisible == true else { return }
-            // Time-based motion preserves speed at 60 FPS and skips missed frames.
-            self.phase += elapsed * (3 + self.intensity * 4.5)
-            self.setNeedsDisplay(NSRect(x: 12, y: 5, width: 39, height: 49))
+            return
         }
-        timer.tolerance = 0.001
-        flameTimer = timer
+        guard limitRotationTimer == nil else { return }
+        let timer = Timer(timeInterval: 8, repeats: true) { [weak self] _ in self?.animateLimitTransition() }
+        timer.tolerance = 0.4
+        limitRotationTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
-    deinit { flameTimer?.invalidate() }
+    private func animateLimitTransition() {
+        transitionToReset = !showsReset
+        limitTransitionStart = ProcessInfo.processInfo.systemUptime
+        if !canAnimate { finishLimitTransition(); return }
+        limitTransitionProgress = 0
+        updateAnimation()
+    }
+    private func finishLimitTransition() {
+        guard limitTransitionStart != nil else { return }
+        showsReset = transitionToReset
+        limitTransitionStart = nil; limitTransitionProgress = nil
+        invalidateLimit()
+        updateAccessibilityLabel()
+    }
+    private func resetDays() -> Int? {
+        guard let reset = usage?.limitResetAt else { return nil }
+        return max(0, Int(ceil((reset - Date().timeIntervalSince1970) / 86_400)))
+    }
+    private func resetDaysText(_ days: Int) -> String {
+        let lastTwo = days % 100
+        let ending = (11...14).contains(lastTwo) ? "дней" : (days % 10 == 1 ? "день" : ((2...4).contains(days % 10) ? "дня" : "дней"))
+        return "\(days) \(ending)"
+    }
+    private func updateAccessibilityLabel() {
+        let count = countText
+        let used = usage?.remainingLimit.map { "\(100 - $0)%" } ?? "—"
+        let request = usage?.running == true ? "\(usage!.requestCaption): \(count) токенов. " : ""
+        let limit = showsReset && resetDays() != nil
+            ? "До сброса лимита: \(resetDaysText(resetDays()!)). "
+            : "Использовано лимита: \(used). "
+        let label = request + limit + "Открыть аналитику"
+        if label != accessibilityText { accessibilityText = label; setAccessibilityLabel(label) }
+    }
+    deinit { limitRotationTimer?.invalidate() }
     override var isFlipped: Bool { true }
     static let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 19, weight: .semibold)
     static func preferredWidth(for usage: Usage) -> CGFloat {
         guard usage.running else { return collapsedWidth }
         let width = (Usage.exact(usage.requestTokens) as NSString).size(withAttributes: [.font: numberFont]).width
-        return max(400, ceil(width + 296))
+        let captionWidth = (usage.requestCaption as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10, weight: .medium)]).width
+        return max(400, ceil(width + 296), ceil(captionWidth + 242))
     }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     override func draw(_ dirtyRect: NSRect) {
@@ -64,21 +149,21 @@ final class BadgeView: ClickableBadge {
         }
         let small = NSFont.systemFont(ofSize: 10, weight: .medium)
         let dividerX = bounds.width - Self.collapsedWidth
-        if requestVisibility > 0, dividerX > 12 {
+        if requestVisibility > 0, dividerX > 12, needsToDraw(NSRect(x: 0, y: 0, width: dividerX, height: bounds.height)) {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: NSRect(x: 0, y: 0, width: max(0, dividerX-12), height: bounds.height)).addClip()
             NSGraphicsContext.current?.cgContext.setAlpha(requestVisibility)
-            drawFlame()
-            if dirtyRect.maxX >= 55 {
-                text(usage?.running == true ? "Запрос · в работе" : "Запрос", x: 58, y: 10, font: small, color: .secondaryLabelColor)
-                let count = usage.map { ($0.isEstimate ? "≈" : "") + Usage.exact($0.requestTokens) } ?? "—"
+            if needsToDraw(NSRect(x: 12, y: 5, width: 39, height: 49)) { drawFlame() }
+            if needsToDraw(NSRect(x: 55, y: 0, width: max(0, dividerX - 55), height: bounds.height)) {
+                text(usage?.requestCaption ?? "Запрос", x: 58, y: 10, font: small, color: .secondaryLabelColor)
+                let count = countText
                 text(count, x: 57, y: 25, font: Self.numberFont, color: .labelColor)
-                let numberWidth = (count as NSString).size(withAttributes: [.font: Self.numberFont]).width
+                let numberWidth = countWidth
                 text("токенов", x: 63 + numberWidth, y: 32, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)
             }
             NSGraphicsContext.restoreGraphicsState()
         }
-        if dirtyRect.maxX < 55 && requestVisibility == 1 { return }
+        guard needsToDraw(NSRect(x: dividerX, y: 0, width: Self.collapsedWidth, height: bounds.height)) else { return }
         if requestVisibility > 0 {
             NSColor.separatorColor.withAlphaComponent(0.45 * requestVisibility).setFill()
             NSBezierPath(roundedRect: NSRect(x: dividerX, y: 17, width: 1, height: 26), xRadius: 0.5, yRadius: 0.5).fill()
@@ -90,14 +175,56 @@ final class BadgeView: ClickableBadge {
         let remaining = usage?.remainingLimit
         let used = remaining.map { 100 - $0 }
         let limitColor: NSColor = remaining.map { $0 <= 10 ? .systemRed : ($0 <= 25 ? .systemOrange : .systemTeal) } ?? .secondaryLabelColor
-        if let used, used > 0 {
-            let arc = NSBezierPath()
-            arc.lineWidth = 2.5; arc.lineCapStyle = .round
-            arc.appendArc(withCenter: NSPoint(x: ringX+8, y: 30), radius: 8, startAngle: -90, endAngle: -90 + 360 * CGFloat(used)/100, clockwise: false)
-            limitColor.setStroke(); arc.stroke()
+        func drawIcon(reset: Bool, alpha: CGFloat) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current?.cgContext.setAlpha(alpha)
+            if reset, let resetAt = usage?.limitResetAt,
+               let duration = usage?.limitWindowDuration, duration > 0 {
+                let remainingTime = max(0, min(duration, resetAt - Date().timeIntervalSince1970))
+                let elapsed = 1 - remainingTime / duration
+                if elapsed > 0 {
+                    let arc = NSBezierPath()
+                    arc.lineWidth = 2.5; arc.lineCapStyle = .round
+                    arc.appendArc(withCenter: NSPoint(x: ringX+8, y: 30), radius: 8,
+                        startAngle: -90, endAngle: -90 + 360 * CGFloat(elapsed), clockwise: false)
+                    NSColor.systemTeal.setStroke(); arc.stroke()
+                }
+            } else if let used, used > 0 {
+                let arc = NSBezierPath()
+                arc.lineWidth = 2.5; arc.lineCapStyle = .round
+                arc.appendArc(withCenter: NSPoint(x: ringX+8, y: 30), radius: 8, startAngle: -90, endAngle: -90 + 360 * CGFloat(used)/100, clockwise: false)
+                limitColor.setStroke(); arc.stroke()
+            }
+            NSGraphicsContext.restoreGraphicsState()
         }
-        text("Использовано", x: ringX + 28, y: 10, font: small, color: .secondaryLabelColor)
-        text(used.map { "\($0)%" } ?? "—", x: ringX + 27, y: 25, font: Self.numberFont, color: .labelColor)
+        if let progress = limitTransitionProgress {
+            drawIcon(reset: showsReset, alpha: 1 - progress)
+            drawIcon(reset: transitionToReset, alpha: progress)
+        } else {
+            drawIcon(reset: showsReset, alpha: 1)
+        }
+        func drawLimitText(reset: Bool, offset: CGFloat, alpha: CGFloat) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current?.cgContext.setAlpha(alpha)
+            if reset, let days = resetDays() {
+                text("До сброса", x: ringX + 28, y: 10 + offset, font: small, color: .secondaryLabelColor)
+                text(resetDaysText(days), x: ringX + 27, y: 25 + offset, font: Self.numberFont, color: .labelColor)
+            } else {
+                text("Использовано", x: ringX + 28, y: 10 + offset, font: small, color: .secondaryLabelColor)
+                text(used.map { "\($0)%" } ?? "—", x: ringX + 27, y: 25 + offset, font: Self.numberFont, color: .labelColor)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: NSRect(x: ringX + 24, y: 5, width: bounds.maxX - ringX - 24, height: bounds.height - 10)).addClip()
+        if let progress = limitTransitionProgress {
+            let distance: CGFloat = 44
+            drawLimitText(reset: showsReset, offset: distance * progress, alpha: 1 - progress)
+            drawLimitText(reset: transitionToReset, offset: -distance * (1 - progress), alpha: progress)
+        } else {
+            drawLimitText(reset: showsReset, offset: 0, alpha: 1)
+        }
+        NSGraphicsContext.restoreGraphicsState()
     }
     private func drawFlame() {
         let strength = intensity
@@ -130,8 +257,14 @@ final class BadgeView: ClickableBadge {
         flame.curve(to: p(0.24, 0.56), controlPoint1: p(0.15, 0.45), controlPoint2: p(0.17, 0.53))
         flame.curve(to: p(0.53 + sway, 0), controlPoint1: p(0.42, 0.35), controlPoint2: p(0.28 + sway, 0.15))
         flame.close()
-        NSGradient(starting: heatColor(NSColor(calibratedRed: 1, green: 0.24, blue: 0.08, alpha: 1), NSColor(calibratedRed: 0.12, green: 0.32, blue: 1, alpha: 1)),
-                   ending: heatColor(NSColor(calibratedRed: 1, green: 0.58, blue: 0.07, alpha: 1), NSColor(calibratedRed: 0.08, green: 0.68, blue: 1, alpha: 1)))?.draw(in: flame, angle: 90)
+        if gradientMix != blueMix {
+            gradientMix = blueMix
+            flameGradient = NSGradient(starting: heatColor(NSColor(calibratedRed: 1, green: 0.24, blue: 0.08, alpha: 1), NSColor(calibratedRed: 0.12, green: 0.32, blue: 1, alpha: 1)),
+                ending: heatColor(NSColor(calibratedRed: 1, green: 0.58, blue: 0.07, alpha: 1), NSColor(calibratedRed: 0.08, green: 0.68, blue: 1, alpha: 1)))
+            heartGradient = NSGradient(starting: heatColor(NSColor(calibratedRed: 1, green: 0.73, blue: 0.08, alpha: 1), .cyan),
+                ending: heatColor(NSColor(calibratedRed: 1, green: 0.92, blue: 0.25, alpha: 1), NSColor(calibratedRed: 0.65, green: 0.94, blue: 1, alpha: 1)))
+        }
+        flameGradient?.draw(in: flame, angle: 90)
         let heart = NSBezierPath()
         heart.move(to: p(0.52 - sway*0.6, 0.30))
         heart.curve(to: p(0.75, 0.66), controlPoint1: p(0.46, 0.48), controlPoint2: p(0.76, 0.47))
@@ -140,8 +273,7 @@ final class BadgeView: ClickableBadge {
         heart.curve(to: p(0.20, 0.65), controlPoint1: p(0.25, 0.96), controlPoint2: p(0.08, 0.80))
         heart.curve(to: p(0.52 - sway*0.6, 0.30), controlPoint1: p(0.35, 0.65), controlPoint2: p(0.29, 0.48))
         heart.close()
-        NSGradient(starting: heatColor(NSColor(calibratedRed: 1, green: 0.73, blue: 0.08, alpha: 1), .cyan),
-                   ending: heatColor(NSColor(calibratedRed: 1, green: 0.92, blue: 0.25, alpha: 1), NSColor(calibratedRed: 0.65, green: 0.94, blue: 1, alpha: 1)))?.draw(in: heart, angle: 90)
+        heartGradient?.draw(in: heart, angle: 90)
         let core = NSBezierPath()
         core.move(to: p(0.50 + sway*0.3, 0.59))
         core.curve(to: p(0.68, 0.84), controlPoint1: p(0.47, 0.72), controlPoint2: p(0.71, 0.73))

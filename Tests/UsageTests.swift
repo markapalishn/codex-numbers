@@ -86,8 +86,11 @@ check(monitor.poll()!.requestTokens == 44 && monitor.poll()!.requestTokens == 44
 let handle = try! FileHandle(forWritingTo: file)
 try! handle.seekToEnd(); try! handle.write(contentsOf: data(record("fragment-2", "f-turn", 50,0,3))); try! handle.close()
 check(monitor.poll()!.requestTokens == 97, "Appended records counted")
+check(monitor.polledSamples.reduce(0) { $0 + $1.count } == 97, "Polling snapshot updates after append")
+check(monitor.poll()!.requestTokens == 97 && monitor.polledSamples.count == 2, "Unchanged poll reuses a complete history")
 try! data(record("replacement", "new", 1)).write(to: file)
 check(monitor.poll()!.requestTokens == 1 && monitor.analyticsSamples().count == 1, "Truncation resets all parser state")
+check(monitor.polledSamples.count == 1 && monitor.polledSamples[0].count == 1, "Truncation invalidates the polling snapshot")
 
 let parent = reader()
 parent.consume(event("task_started", ["turn_id": "root"]))
@@ -114,15 +117,34 @@ check(joinedSamples.allSatisfy { $0.projectPath == "/projects/alpha" }, "Child a
 check(joined.selectedUsage(now: auditNow)!.requestTokens == 315, "Live root includes child usage")
 let other = reader("other")
 other.consume(event("task_started", ["turn_id": "other-turn"]))
-other.consume(record("other-call", "other-turn", 999, session: "other"))
+joined.readers[dir.appendingPathComponent("o")] = other
+check(joined.selectedUsage(now: auditNow)!.activeRequestCount == 2 && joined.selectedUsage(now: auditNow)!.requestTokens == 315, "New parallel request counted before first token event; child is not a separate request")
+other.consume(record("other-call", "other-turn", 999, 0, 20, session: "other"))
+check(joined.selectedUsage(now: auditNow)!.requestTokens == 1334, "Parallel badge sums both active roots")
+var parallelOutput = joined.selectedUsage(now: auditNow)!
+parallelOutput.countMode = .outgoing
+check(parallelOutput.requestTokens == 35 && parallelOutput.requestCaption == "В работе: 2", "Parallel badge labels request count without mode suffix")
+var repeatedParent = parentRecord
+repeatedParent["timestamp"] = stamp()
+parent.consume(repeatedParent)
+check(joined.selectedUsage(now: auditNow)!.requestTokens == 1334, "Latest event moving to another root cannot switch or duplicate badge total")
 other.consume(event("task_complete", ["turn_id": "other-turn"]))
 joined.readers[dir.appendingPathComponent("o")] = other
 check(joined.selectedUsage(now: auditNow)!.requestTokens == 315 && joined.selectedUsage(now: auditNow)!.running, "Completed parallel turn cannot hide active root or mix totals")
+check(joined.selectedUsage(now: auditNow)!.activeRequestCount == 1, "Completed parallel root removed from active count")
 parent.consume(event("task_complete", ["turn_id": "root"]))
-check(joined.selectedUsage(now: auditNow)!.running, "Child can outlive parent")
+check(joined.selectedUsage(now: auditNow)!.running && joined.selectedUsage(now: auditNow)!.activeRequestCount == 1, "Child can outlive parent without adding a request")
 child.consume(event("task_complete", ["turn_id": "child-turn"]))
 check(!joined.selectedUsage(now: auditNow)!.running && joined.selectedUsage(now: auditNow)!.badgeUsage.requestTokens == 0, "Parent and child done collapses badge")
 
+check(joined.selectedUsage(now: auditNow)!.activeRequestCount == 0, "All requests completed clears active count")
+let aborted = reader("aborted")
+aborted.consume(event("task_started", ["turn_id": "abort-parallel"]))
+aborted.consume(record("abort-call", "abort-parallel", 70, 0, 3, session: "aborted"))
+joined.readers[dir.appendingPathComponent("aborted")] = aborted
+check(joined.selectedUsage(now: auditNow)!.requestTokens == 73, "New active request excludes completed history")
+aborted.consume(event("turn_aborted", ["turn_id": "abort-parallel"]))
+check(joined.selectedUsage(now: auditNow)!.badgeUsage.requestTokens == 0 && joined.selectedUsage(now: auditNow)!.activeRequestCount == 0, "Aborted request removed from badge")
 let stale = reader("stale")
 stale.consume(["type": "event_msg", "timestamp": "2026-03-12T23:01:27Z", "payload": ["type": "task_started", "turn_id": "stale-turn"]])
 joined.readers[dir.appendingPathComponent("stale")] = stale
@@ -141,14 +163,50 @@ check(summary.groups(byModel: true).count == 2 && summary.groups(byModel: false)
 check(summary.buckets().reduce(0) { $0+$1.total } == summary.total, "Chart agrees with total")
 check(AnalyticsSummary(samples: joinedSamples, period: 0, model: "child-model", now: now).total == 210, "Model filter")
 check(AnalyticsSummary(samples: joinedSamples, period: 0, now: now.addingTimeInterval(86400)).total == 0, "Period boundary")
-let limits: [String: Any] = ["limit_id": "codex", "primary": ["used_percent": 11, "resets_at": 4_000_000_000.0]]
+let limits: [String: Any] = ["limit_id": "codex", "primary": ["used_percent": 11, "window_minutes": 10_080, "resets_at": 4_000_000_000.0]]
 parent.consume(event("token_count", ["info": NSNull(), "rate_limits": limits]))
 check(joined.selectedUsage(now: auditNow)!.remainingLimit == 89, "Limits still update without token records")
+check(joined.selectedUsage(now: auditNow)!.limitResetAt == 4_000_000_000, "Reset time follows the displayed limit window")
+check(joined.selectedUsage(now: auditNow)!.limitWindowDuration == 604_800, "Limit window duration is preserved for the countdown graph")
 check(parent.limit?.remaining(now: 4_000_000_001) == nil, "Expired limits unknown")
+check(parent.limit?.current(now: 4_000_000_001) == nil, "Expired reset time is unknown")
+let twoWindows = LimitSnapshot(["limit_id": "codex",
+    "primary": ["used_percent": 17.0, "window_minutes": 300.0, "resets_at": 4_100_000_000.0],
+    "secondary": ["used_percent": 63.0, "window_minutes": 10_080.0, "resets_at": 4_200_000_000.0]], timestamp: "")!
+check(twoWindows.current(now: auditNow.timeIntervalSince1970)?.remaining == 37 &&
+      twoWindows.current(now: auditNow.timeIntervalSince1970)?.resets == 4_200_000_000 &&
+      twoWindows.current(now: auditNow.timeIntervalSince1970)?.duration == 604_800,
+      "Reset time belongs to the limit window whose usage is displayed")
 check(LimitSnapshot(["limit_id": "another-model"], timestamp: "") == nil, "Unrelated limit ignored")
 check(Usage.format(105000) == "105 тыс." && Usage.format(1400) == "1,4 тыс.", "Formatting")
 let early = reader("early")
 early.consume(["type": "response_item", "payload": ["role": "user", "content": [["type": "input_text", "text": "Сообщение перед стартом"]]]])
 early.consume(event("task_started", ["turn_id": "early-turn"]))
 check(early.states["early-turn"]?.requestText == "Сообщение перед стартом", "Message before lifecycle event preserved")
+let outgoing = AnalyticsSummary(samples: joinedSamples, period: 0, countMode: .outgoing, now: now)
+check(outgoing.total == 15 && outgoing.requestCount == summary.requestCount, "Outgoing includes parent and child output, preserving request count")
+check(outgoing.groups(byModel: true).map(\.total).sorted() == [5, 10], "Outgoing model groups")
+check(outgoing.groups(byModel: false).first?.total == 15 && outgoing.requests.first?.total == 15, "Outgoing project and request totals")
+check(outgoing.buckets().reduce(0) { $0 + $1.total } == 15, "Outgoing chart agrees with total")
+check(AnalyticsSummary(samples: joinedSamples, period: 0, model: "child-model", countMode: .outgoing, now: now).total == 10, "Outgoing respects model filter")
+var switched = Usage()
+switched.tokens = Tokens(["input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 5])
+switched.running = true; switched.remainingLimit = 89
+switched.countMode = .outgoing
+check(switched.requestTokens == 5 && switched.badgeUsage.requestTokens == 5 && switched.remainingLimit == 89, "Outgoing badge preserves independent limit")
+check(switched.requestCaption == "Запрос", "Single request caption has no status or count-mode suffix")
+switched.activeRequestIDs = ["one", "two"]
+check(switched.requestCaption == "В работе: 2", "Parallel request caption has no dot suffix")
+switched.running = false
+check(switched.badgeUsage.requestTokens == 0, "Idle outgoing badge stays empty")
+switched.countMode = .all
+check(switched.requestTokens == 105, "Switching back restores all tokens without adding cache again")
+let preferencesName = "CodexNumbersTests-" + UUID().uuidString
+let preferences = UserDefaults(suiteName: preferencesName)!
+check(TokenCountMode.load(from: preferences) == .all, "Default mode is all")
+preferences.set("outgoing", forKey: TokenCountMode.defaultsKey)
+check(TokenCountMode.load(from: preferences) == .outgoing, "Saved outgoing mode restored")
+preferences.set("unknown", forKey: TokenCountMode.defaultsKey)
+check(TokenCountMode.load(from: preferences) == .all, "Unknown preference falls back to all")
+preferences.removePersistentDomain(forName: preferencesName)
 print("All usage and analytics tests passed")

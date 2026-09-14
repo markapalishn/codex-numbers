@@ -5,9 +5,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var panel: NSPanel!
     var badge: BadgeView!
     var timer: Timer?
+    var countMode = TokenCountMode.load()
     var current: Usage?
     var displayed: Usage?
-    var numberAnimation: Timer?
     let queue = DispatchQueue(label: "local.codex-numbers.reader", qos: .utility)
     let monitor = UsageMonitor(root: URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory()+"/.codex").appendingPathComponent("sessions"))
     var polling = false
@@ -66,19 +66,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setContentSize(NSSize(width: 172, height: 72))
         panel.orderFrontRegardless()
         analytics = AnalyticsController()
+        analytics.countMode = countMode
+        analytics.onCountModeChange = { [weak self] mode in self?.setCountMode(mode) }
         updateMenu()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+        timer?.tolerance = 0.3
     }
     func refresh() {
         guard !polling else { return }
         polling = true
         queue.async { [self] in
             let usage = monitor.poll()
-            let samples = monitor.analyticsSamples()
+            let snapshot = AnalyticsSnapshot(samples: monitor.polledSamples)
             DispatchQueue.main.async { [self] in
                 polling = false
-                analytics.update(samples)
+                analytics.update(snapshot)
                 if let flag = CommandLine.arguments.firstIndex(of: "--preview"),
                    CommandLine.arguments.indices.contains(flag + 1), !previewExported {
                     previewExported = true
@@ -123,6 +126,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             fitPanel(for: [example])
                             captureBadge("badge-" + name)
                         }
+                        var parallelExample = Usage()
+                        parallelExample.running = true
+                        parallelExample.activeRequestIDs = ["preview-one", "preview-two"]
+                        parallelExample.tokens = Tokens(["input_tokens": 300_000, "output_tokens": 15_000])
+                        parallelExample.remainingLimit = 86
+                        for mode in TokenCountMode.allCases {
+                            parallelExample.countMode = mode
+                            badge.usage = parallelExample; badge.requestVisibility = 1
+                            fitPanel(for: [parallelExample])
+                            captureBadge("badge-parallel-" + mode.rawValue)
+                        }
                         analytics.tabs.selectedSegment = 1
                         analytics.rebuild()
                         capture(output.deletingPathExtension().appendingPathExtension("models.png"))
@@ -134,11 +148,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         NSApp.terminate(nil)
                     }
                 }
-                let usage = usage ?? Usage()
+                var usage = usage ?? Usage()
+                usage.countMode = countMode
                 current = usage
                 animateNumbers(to: usage.badgeUsage)
-                updateMenu()
-                panel.saveFrame(usingName: "CodexNumbersPanel")
             }
         }
     }
@@ -146,8 +159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         displayed = usage
         badge.usage = usage
         let used = usage.remainingLimit.map { "\(100 - $0)%" } ?? "—"
-        item.button?.title = used
-        item.button?.toolTip = "Использовано лимита Codex: \(used)"
+        if item.button?.title != used {
+            item.button?.title = used
+            item.button?.toolTip = "Использовано лимита Codex: \(used)"
+        }
     }
     func fitPanel(for usages: [Usage]) {
         setPanelWidth(usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 172)
@@ -155,22 +170,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func setPanelWidth(_ width: CGFloat) {
         var frame = panel.frame
         let right = frame.maxX
-        frame.size.width = ceil(width)
+        let scale = panel.backingScaleFactor
+        frame.size.width = (width * scale).rounded() / scale
         frame.origin.x = right - frame.width
         if let screen = panel.screen ?? NSScreen.main {
             frame.origin.x = max(screen.visibleFrame.minX, min(frame.origin.x, screen.visibleFrame.maxX-frame.width))
         }
-        panel.setFrame(frame, display: true)
-        badge.needsDisplay = true
+        guard panel.frame != frame else { return }
+        // Coalesce layout and drawing with the next display refresh.
+        panel.setFrame(frame, display: false)
     }
     func animateNumbers(to target: Usage) {
-        numberAnimation?.invalidate()
-        numberAnimation = nil
+        badge.numberFrame = nil
         let targetWidth = BadgeView.preferredWidth(for: target) + 12
         let targetVisibility: CGFloat = target.running ? 1 : 0
         guard let start = displayed,
-              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              start.tokens != target.tokens || start.remainingLimit != target.remainingLimit ||
+              start.activeRequestIDs == target.activeRequestIDs || !start.running || !target.running,
+              badge.canAnimate,
+              start.requestTokens != target.requestTokens || start.remainingLimit != target.remainingLimit ||
               start.running != target.running || abs(panel.frame.width-targetWidth) > 0.5 else {
             badge.requestVisibility = targetVisibility
             renderNumbers(target)
@@ -180,9 +197,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let startWidth = panel.frame.width
         let startVisibility = badge.requestVisibility
         let began = ProcessInfo.processInfo.systemUptime
-        let animation = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            let progress = min(1, (ProcessInfo.processInfo.systemUptime - began) / 0.55)
+        badge.numberFrame = { [weak self] now, finish in
+            guard let self else { return false }
+            let progress = finish ? 1 : min(1, (now - began) / 0.55)
             let eased = 1 - pow(1 - progress, 3)
             func interpolate(_ a: Int, _ b: Int) -> Int {
                 Int((Double(a) + (Double(b) - Double(a)) * eased).rounded())
@@ -196,24 +213,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.setPanelWidth(startWidth + (targetWidth-startWidth) * CGFloat(eased))
             self.renderNumbers(frame)
             if progress >= 1 {
-                timer.invalidate()
-                self.numberAnimation = nil
                 self.badge.requestVisibility = targetVisibility
                 self.renderNumbers(target)
                 self.setPanelWidth(targetWidth)
                 self.panel.saveFrame(usingName: "CodexNumbersPanel")
             }
+            return progress < 1
         }
-        numberAnimation = animation
-        RunLoop.main.add(animation, forMode: .common)
     }
     func updateMenu() {
         let menu = NSMenu()
         let details = menu.addItem(withTitle: "Аналитика", action: #selector(showAnalytics), keyEquivalent: "")
         details.target = self
+        menu.addItem(.separator())
+        let modeMenu = NSMenu()
+        for (index, mode) in TokenCountMode.allCases.enumerated() {
+            let entry = modeMenu.addItem(withTitle: mode.title, action: #selector(changeCountMode(_:)), keyEquivalent: "")
+            entry.target = self; entry.tag = index; entry.state = mode == countMode ? .on : .off
+        }
+        let modeItem = menu.addItem(withTitle: "Подсчёт токенов", action: nil, keyEquivalent: "")
+        modeItem.submenu = modeMenu
+        menu.addItem(.separator())
         let quit = menu.addItem(withTitle: "Завершить Codex Numbers", action: #selector(quitApp), keyEquivalent: "q"); quit.target = self
         badge.menu = menu
         item.menu = menu.copy() as? NSMenu
+    }
+    func setCountMode(_ mode: TokenCountMode) {
+        guard countMode != mode else { return }
+        countMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: TokenCountMode.defaultsKey)
+        if analytics.countMode != mode { analytics.countMode = mode }
+        badge.numberFrame = nil
+        if var usage = current {
+            usage.countMode = mode; current = usage
+            let target = usage.badgeUsage
+            badge.requestVisibility = target.running ? 1 : 0
+            renderNumbers(target); fitPanel(for: [target]); badge.animateContentChange()
+        }
+        updateMenu()
+    }
+    @objc func changeCountMode(_ sender: NSMenuItem) {
+        guard TokenCountMode.allCases.indices.contains(sender.tag) else { return }
+        setCountMode(TokenCountMode.allCases[sender.tag])
     }
     @objc func showAnalytics() { analytics.present(near: panel) }
     func toggleAnalytics() {
@@ -232,7 +273,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 if CommandLine.arguments.contains("--snapshot") {
     let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory()+"/.codex").appendingPathComponent("sessions")
-    print(UsageMonitor(root: root).poll()?.line ?? "Нет данных")
+    var usage = UsageMonitor(root: root).poll()
+    usage?.countMode = TokenCountMode.load()
+    print(usage?.line ?? "Нет данных")
 } else {
     let app = NSApplication.shared
     let delegate = AppDelegate()

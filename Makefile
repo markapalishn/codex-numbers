@@ -5,8 +5,10 @@ APP := $(BUILD_DIR)/$(APP_NAME).app
 INSTALL_DIR := $(HOME)/Applications
 SWIFTC := swiftc
 SOURCES := $(wildcard Sources/*.swift)
+UI_SOURCES := $(filter-out Sources/main.swift,$(SOURCES))
+UI_TEST_DIR := $(BUILD_DIR)/ui-tests
 
-.PHONY: help build run test clean install uninstall snapshot preview update audit
+.PHONY: help build run test clean install uninstall snapshot preview update audit test-ui
 help: ## Показать команды
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  make %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 build: ## Собрать приложение macOS
@@ -21,6 +23,11 @@ test: ## Проверить подсчёт токенов и чтение жур
 	@cp Tests/UsageTests.swift "$(BUILD_DIR)/tests/main.swift"
 	$(SWIFTC) Sources/Usage.swift Sources/Analytics.swift "$(BUILD_DIR)/tests/main.swift" -o "$(BUILD_DIR)/tests/usage-tests"
 	@"$(BUILD_DIR)/tests/usage-tests"
+test-ui: ## Проверить анимации, переключения и сохранить снимки интерфейса
+	@mkdir -p "$(UI_TEST_DIR)"
+	@cp Tests/AnimationTests.swift "$(UI_TEST_DIR)/main.swift"
+	$(SWIFTC) -O $(UI_SOURCES) "$(UI_TEST_DIR)/main.swift" -o "$(UI_TEST_DIR)/animation-tests" -framework AppKit
+	@"$(UI_TEST_DIR)/animation-tests" "$(UI_TEST_DIR)"
 audit: ## Сверить подсчёт с реальными записями Codex (локально)
 	@mkdir -p "$(BUILD_DIR)/audit"
 	@cp Tests/JournalAudit.swift "$(BUILD_DIR)/audit/main.swift"
