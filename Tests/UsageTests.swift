@@ -1,98 +1,144 @@
 import Foundation
 
+let auditNow = TokenSample.parseDate("2026-09-14T13:00:00Z")!
+var tick = 0
+func stamp() -> String { tick += 1; return String(format: "2026-09-14T12:%02d:%02dZ", tick/60, tick%60) }
 func event(_ type: String, _ extra: [String: Any] = [:]) -> [String: Any] {
-    ["type": "event_msg", "timestamp": "2026-09-14T12:00:00Z", "payload": extra.merging(["type": type]) { _, b in b }]
+    ["type": "event_msg", "timestamp": stamp(), "payload": extra.merging(["type": type]) { _, b in b }]
 }
-func token(_ input: Int, _ cached: Int, _ output: Int, last: Int = 100) -> [String: Any] {
-    event("token_count", ["info": ["total_token_usage": ["input_tokens": input, "cached_input_tokens": cached, "output_tokens": output], "last_token_usage": ["total_tokens": last], "model_context_window": 1000]])
+func counts(_ input: Int, _ cached: Int = 0, _ output: Int = 0) -> [String: Any] {
+    ["input_tokens": input, "cached_input_tokens": cached, "output_tokens": output]
 }
-func check(_ value: @autoclosure () -> Bool, _ message: String) {
-    if !value() { fatalError(message) }
+func token(_ input: Int, _ cached: Int = 0, _ output: Int = 0) -> [String: Any] {
+    event("token_count", ["info": ["total_token_usage": counts(input,cached,output)]])
 }
-let r = SessionReader()
-r.consume(event("task_started"))
-r.consume(token(100, 80, 5))
-r.consume(token(100, 80, 5))
-r.consume(token(220, 180, 12, last: 410))
-check(r.usage!.tokens.input == 220, "Sum calls, ignore duplicate")
-r.consume(event("task_complete"))
-check(!r.usage!.running, "Completion")
-check(r.usage!.badgeUsage.requestTokens == 0 && r.usage!.requestTokens == 232, "Idle badge clears while completed total is retained")
-r.consume(event("task_started"))
-r.consume(token(270, 220, 15))
-check(r.usage!.badgeUsage.requestTokens == 53, "Active badge shows current turn")
-check(r.usage!.tokens.input == 50 && r.usage!.tokens.output == 3, "New turn delta")
-r.consume(event("token_count", ["info": NSNull()]))
-check(r.usage!.tokens.input == 50, "Ignore rate limit only event")
-r.consume(event("turn_aborted"))
-check(!r.usage!.running, "Abort")
-check(r.usage!.badgeUsage.requestTokens == 0, "Abort clears badge")
-r.consume(event("task_started"))
-r.consume(token(20, 10, 2))
-check(r.usage!.tokens.input == 20, "Counter reset")
-r.consume(event("task_complete"))
-r.consume(event("task_started"))
-r.consume(event("task_complete"))
-check(r.usage!.requestTokens == 0, "Empty new turn does not reuse previous tokens")
-let fragmented = SessionReader()
-let bytes = try! JSONSerialization.data(withJSONObject: token(42, 10, 2)) + Data([10])
-fragmented.consume(bytes.prefix(15))
-check(fragmented.usage == nil, "Wait for full JSONL record")
-fragmented.consume(bytes.dropFirst(15))
-check(fragmented.usage!.tokens.input == 42, "Resume partial record")
-fragmented.consume(Data("invalid\n".utf8))
-check(fragmented.usage!.tokens.input == 42, "Ignore malformed record")
-check(Usage.format(105000) == "105 тыс." && Usage.format(1400) == "1,4 тыс.", "Formatting")
+func record(_ response: String, _ turn: String, _ input: Int, _ cached: Int = 0, _ output: Int = 0, root: String? = nil, session: String = "parent", checkpoint: [String: Any]? = nil) -> [String: Any] {
+    var payload: [String: Any] = ["response_id": response, "turn_id": turn, "root_turn_id": root ?? turn, "session_id": session, "usage": counts(input,cached,output)]
+    if let checkpoint { payload["turn_token_usage"] = checkpoint }
+    return ["type": "token_usage_record", "timestamp": stamp(), "payload": payload]
+}
+func context(_ turn: String, _ model: String, path: String = "/projects/alpha") -> [String: Any] {
+    ["type": "turn_context", "timestamp": stamp(), "payload": ["turn_id": turn, "model": model, "cwd": path]]
+}
+func reader(_ session: String = "parent", path: String = "/projects/alpha") -> SessionReader {
+    let r = SessionReader()
+    r.consume(["type": "session_meta", "payload": ["id": session, "cwd": path]])
+    return r
+}
+func check(_ value: @autoclosure () -> Bool, _ message: String) { if !value() { fatalError(message) } }
+func data(_ obj: [String: Any]) -> Data { try! JSONSerialization.data(withJSONObject: obj) + Data([10]) }
+
+let r = reader()
+r.consume(event("task_started", ["turn_id": "turn-a"]))
+r.consume(context("turn-a", "model-a"))
+let first = record("response-1", "turn-a", 100, 80, 5)
+r.consume(first); r.consume(first)
+r.consume(token(100,80,5))
+check(r.usage!.requestTokens == 105 && !r.usage!.isEstimate, "Direct response once; cached not added; token_count not added")
+r.consume(context("turn-a", "model-b"))
+// Compaction response is absent from the old cumulative counter.
+r.consume(record("compaction", "turn-a", 200, 150, 10))
+r.consume(["type": "compacted", "payload": [:]])
+r.consume(token(100,80,5))
+r.consume(record("response-3", "turn-a", 50, 20, 3, checkpoint: counts(350,250,18)))
+r.consume(token(150,100,8))
+check(r.usage!.requestTokens == 368, "Compaction retained even when old counter does not grow")
+check(r.checkpoints["turn-a"] == r.usage!.tokens, "Matches Codex turn checkpoint")
+r.consume(event("task_complete", ["turn_id": "turn-a"]))
+check(r.usage!.badgeUsage.requestTokens == 0 && r.usage!.requestTokens == 368, "Completed turn preserved in history; idle badge zero")
+r.consume(event("task_started", ["turn_id": "turn-b"]))
+check(r.usage!.requestTokens == 0 && r.usage!.running, "New request starts at zero")
+r.consume(record("response-b", "turn-b", 20,10,2))
+r.consume(event("turn_aborted", ["turn_id": "turn-b"]))
+check(!r.usage!.running && r.usage!.badgeUsage.requestTokens == 0, "Abort clears badge")
+// A late record belongs to its explicit ID, never to the last current turn.
+r.consume(record("late-a", "turn-a", 10,0,1))
+check(r.states["turn-a"]?.usage.running == false, "Late response cannot reopen completion")
+check(r.samples.filter { $0.localTurn == "turn-b" }.reduce(0) { $0+$1.count } == 22, "Late response cannot leak into another turn")
+
+let legacy = reader("legacy")
+legacy.consume(event("task_started", ["turn_id": "old-turn"]))
+let legacyToken = token(100,80,5)
+legacy.consume(legacyToken); legacy.consume(legacyToken); legacy.consume(token(220,180,12))
+check(legacy.usage!.requestTokens == 232 && legacy.usage!.isEstimate, "Legacy counters remain available as estimates")
+legacy.consume(event("task_started", ["turn_id": "old-next"]))
+legacy.consume(token(270,220,15))
+check(legacy.usage!.requestTokens == 53, "Legacy baseline is per session, not reset per turn")
+legacy.consume(token(20,10,2))
+check(legacy.usage!.requestTokens == 75, "Legacy counter reset")
+// Prefer explicit records for the same turn even if the cumulative event came first.
+legacy.consume(record("old-promoted", "old-next", 30,10,3, session: "legacy"))
+check(legacy.usage!.requestTokens == 33 && !legacy.usage!.isEstimate, "Authoritative turn replaces fallback, never sums both")
+
+let fragmented = reader("fragmented")
+let bytes = data(record("fragment", "f-turn", 42,10,2, session: "fragmented"))
+fragmented.consume(bytes.prefix(15)); check(fragmented.usage == nil, "Partial JSONL waits")
+fragmented.consume(bytes.dropFirst(15)); fragmented.consume(Data("invalid\n".utf8))
+check(fragmented.usage!.requestTokens == 44, "Partial and malformed lines handled")
+
 let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: dir) }
 let file = dir.appendingPathComponent("session.jsonl")
 try! bytes.write(to: file)
 let monitor = UsageMonitor(root: dir)
-check(monitor.poll()!.tokens.input == 42, "Discover session")
-check(monitor.poll()!.tokens.input == 42, "No double counting on poll")
+check(monitor.poll()!.requestTokens == 44 && monitor.poll()!.requestTokens == 44, "Tail reread never duplicates")
 let handle = try! FileHandle(forWritingTo: file)
-try! handle.seekToEnd()
-try! handle.write(contentsOf: JSONSerialization.data(withJSONObject: token(100, 20, 4)) + Data([10]))
-try! handle.close()
-check(monitor.poll()!.tokens.input == 100, "Tail appended events")
-check(monitor.poll()!.requestTokens == 104, "Input plus output, cached not counted twice")
+try! handle.seekToEnd(); try! handle.write(contentsOf: data(record("fragment-2", "f-turn", 50,0,3))); try! handle.close()
+check(monitor.poll()!.requestTokens == 97, "Appended records counted")
+try! data(record("replacement", "new", 1)).write(to: file)
+check(monitor.poll()!.requestTokens == 1 && monitor.analyticsSamples().count == 1, "Truncation resets all parser state")
+
+let parent = reader()
+parent.consume(event("task_started", ["turn_id": "root"]))
+parent.consume(context("root", "parent-model"))
+let parentRecord = record("parent-call", "root", 100,80,5)
+parent.consume(parentRecord)
+let child = reader("child", path: "/scratch/worker")
+child.isChild = true
+child.consume(event("task_started", ["turn_id": "child-turn"]))
+child.consume(context("child-turn", "child-model", path: "/scratch/worker"))
+let childRecord = record("child-call", "child-turn", 200,100,10, root: "root", session: "child")
+child.consume(childRecord)
+let copy = reader("copy")
+copy.consume(parentRecord); copy.consume(childRecord)
+let joined = UsageMonitor(root: dir)
+joined.readers = [dir.appendingPathComponent("p"):parent, dir.appendingPathComponent("c"):child, dir.appendingPathComponent("copy"):copy]
+let joinedSamples = joined.analyticsSamples()
+check(joinedSamples.count == 2 && joinedSamples.allSatisfy { $0.request == "root" }, "Child belongs to parent; duplicates across journals excluded")
+check(joinedSamples.allSatisfy { $0.projectPath == "/projects/alpha" }, "Child attributed to parent project")
+check(joined.selectedUsage(now: auditNow)!.requestTokens == 315, "Live root includes child usage")
+let other = reader("other")
+other.consume(event("task_started", ["turn_id": "other-turn"]))
+other.consume(record("other-call", "other-turn", 999, session: "other"))
+other.consume(event("task_complete", ["turn_id": "other-turn"]))
+joined.readers[dir.appendingPathComponent("o")] = other
+check(joined.selectedUsage(now: auditNow)!.requestTokens == 315 && joined.selectedUsage(now: auditNow)!.running, "Completed parallel turn cannot hide active root or mix totals")
+parent.consume(event("task_complete", ["turn_id": "root"]))
+check(joined.selectedUsage(now: auditNow)!.running, "Child can outlive parent")
+child.consume(event("task_complete", ["turn_id": "child-turn"]))
+check(!joined.selectedUsage(now: auditNow)!.running && joined.selectedUsage(now: auditNow)!.badgeUsage.requestTokens == 0, "Parent and child done collapses badge")
+
+let stale = reader("stale")
+stale.consume(["type": "event_msg", "timestamp": "2026-03-12T23:01:27Z", "payload": ["type": "task_started", "turn_id": "stale-turn"]])
+joined.readers[dir.appendingPathComponent("stale")] = stale
+check(!joined.selectedUsage(now: auditNow)!.running, "Unmatched old start cannot revive a stale task")
+let fallbackCopy = reader("fallback-copy")
+fallbackCopy.consume(context("root", "parent-model"))
+fallbackCopy.consume(token(999_999))
+joined.readers[dir.appendingPathComponent("fallback-copy")] = fallbackCopy
+check(joined.analyticsSamples().filter { $0.request == "root" }.reduce(0) { $0+$1.count } == 315, "Modern records suppress fallback across different files")
+let now = auditNow
+let summary = AnalyticsSummary(samples: joinedSamples, period: 0, now: now)
+check(summary.total == 315 && summary.requestCount == 1, "One user request includes both models")
+check(summary.groups(byModel: true).count == 2 && summary.groups(byModel: false).count == 1, "Models split; root project joined")
+check(summary.buckets().reduce(0) { $0+$1.total } == summary.total, "Chart agrees with total")
+check(AnalyticsSummary(samples: joinedSamples, period: 0, model: "child-model", now: now).total == 210, "Model filter")
+check(AnalyticsSummary(samples: joinedSamples, period: 0, now: now.addingTimeInterval(86400)).total == 0, "Period boundary")
 let limits: [String: Any] = ["limit_id": "codex", "primary": ["used_percent": 11, "resets_at": 4_000_000_000.0]]
-r.consume(event("token_count", ["info": NSNull(), "rate_limits": limits]))
-check(r.limit?.remaining() == 89, "Rate-only event updates remaining limit")
-check(r.limit?.remaining(now: 4_000_000_001) == nil, "Expired limit is unknown")
-let separate: [String: Any] = ["limit_id": "codex_bengalfox", "primary": ["used_percent": 90, "resets_at": 4_000_000_000.0]]
-r.consume(event("token_count", ["rate_limits": separate]))
-check(r.limit?.remaining() == 89, "Separate model limit cannot overwrite Codex allowance")
-let multiple: [String: Any] = ["primary": ["used_percent": 11, "resets_at": 4_000_000_000.0], "secondary": ["used_percent": 40, "resets_at": 4_000_000_000.0]]
-check(LimitSnapshot(multiple, timestamp: "")?.remaining() == 60, "Use most constrained window")
-let rateData = try! JSONSerialization.data(withJSONObject: event("token_count", ["rate_limits": limits])) + Data([10])
-let writer = try! FileHandle(forWritingTo: file)
-try! writer.seekToEnd(); try! writer.write(contentsOf: rateData); try! writer.close()
-check(monitor.poll()!.remainingLimit == 89, "Monitor combines latest usage with rate snapshot")
-check(monitor.poll()!.line == "Запрос: 104 токенов · Остаток лимита: 89%", "Requested display")
-let analyticsReader = SessionReader()
-analyticsReader.consume(["type": "session_meta", "payload": ["id": "test-session", "cwd": "/projects/alpha"]])
-analyticsReader.consume(event("task_started", ["turn_id": "turn-a"]))
-analyticsReader.consume(["type": "turn_context", "payload": ["model": "model-a", "turn_id": "turn-a", "cwd": "/projects/alpha"]])
-analyticsReader.consume(token(100, 80, 5))
-analyticsReader.consume(token(100, 80, 5))
-analyticsReader.consume(["type": "turn_context", "payload": ["model": "model-b", "turn_id": "turn-a"]])
-analyticsReader.consume(token(220, 180, 12))
-let now = TokenSample.parseDate("2026-09-14T13:00:00Z")!
-let summary = AnalyticsSummary(samples: analyticsReader.samples, period: 0, now: now)
-check(summary.total == 232 && summary.requestCount == 1, "Calls summed into one request, duplicates ignored")
-check(summary.groups(byModel: true).count == 2, "Model switch attributed per call")
-check(summary.groups(byModel: false).first?.title == "alpha", "Project attribution")
-check(summary.buckets().reduce(0) { $0 + $1.total } == summary.total, "Chart and total agree")
-check(AnalyticsSummary(samples: analyticsReader.samples, period: 0, model: "model-a", now: now).total == 105, "Model filter")
-check(AnalyticsSummary(samples: analyticsReader.samples, period: 0, project: "/projects/other", now: now).total == 0, "Project filter")
-check(AnalyticsSummary(samples: analyticsReader.samples, period: 0, now: now.addingTimeInterval(86400)).total == 0, "Period boundary")
-let copied = SessionReader()
-copied.samples = analyticsReader.samples
-monitor.readers[dir.appendingPathComponent("copy-a")] = analyticsReader
-monitor.readers[dir.appendingPathComponent("copy-b")] = copied
-check(monitor.analyticsSamples().filter { $0.request == "turn-a" }.count == 2, "Copied history counted only once")
-copied.isChild = true
-check(monitor.analyticsSamples().filter { $0.request == "turn-a" }.count == 2, "Child sessions excluded")
+parent.consume(event("token_count", ["info": NSNull(), "rate_limits": limits]))
+check(joined.selectedUsage(now: auditNow)!.remainingLimit == 89, "Limits still update without token records")
+check(parent.limit?.remaining(now: 4_000_000_001) == nil, "Expired limits unknown")
+check(LimitSnapshot(["limit_id": "another-model"], timestamp: "") == nil, "Unrelated limit ignored")
+check(Usage.format(105000) == "105 тыс." && Usage.format(1400) == "1,4 тыс.", "Formatting")
 print("All usage and analytics tests passed")

@@ -5,7 +5,7 @@ final class BadgeView: ClickableBadge {
         didSet {
             needsDisplay = true
             updateFlameAnimation()
-            let count = usage.map { Usage.exact($0.requestTokens) } ?? "—"
+            let count = usage.map { ($0.isEstimate ? "≈" : "") + Usage.exact($0.requestTokens) } ?? "—"
             let used = usage?.remainingLimit.map { "\(100 - $0)%" } ?? "—"
             let request = usage?.running == true ? "Запрос: \(count) токенов. " : ""
             setAccessibilityLabel(request + "Использовано лимита: \(used). Открыть аналитику")
@@ -71,7 +71,7 @@ final class BadgeView: ClickableBadge {
             drawFlame()
             if dirtyRect.maxX >= 55 {
                 text(usage?.running == true ? "Запрос · в работе" : "Запрос", x: 58, y: 10, font: small, color: .secondaryLabelColor)
-                let count = usage.map { Usage.exact($0.requestTokens) } ?? "—"
+                let count = usage.map { ($0.isEstimate ? "≈" : "") + Usage.exact($0.requestTokens) } ?? "—"
                 text(count, x: 57, y: 25, font: Self.numberFont, color: .labelColor)
                 let numberWidth = (count as NSString).size(withAttributes: [.font: Self.numberFont]).width
                 text("токенов", x: 63 + numberWidth, y: 32, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)

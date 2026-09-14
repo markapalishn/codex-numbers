@@ -15,6 +15,7 @@ struct Tokens: Equatable {
 
 struct Usage {
     var tokens = Tokens()
+    var isEstimate = false
     var remainingLimit: Int?
     var timestamp = ""
     var running = false
@@ -71,22 +72,46 @@ struct LimitSnapshot {
     }
 }
 
+struct TurnState {
+    var id: String
+    var root: String
+    var usage: Usage
+    var projectPath: String
+    var lifecycleTimestamp = ""
+}
+
 final class SessionReader {
     var offset: UInt64 = 0
     var pending = Data()
     var total = Tokens()
-    var usage: Usage?
     var current = Usage()
-    var hasTurn = false
-    var turnHasUsage = false
     var isChild = false
     var limit: LimitSnapshot?
-    var samples: [TokenSample] = []
     var model = "Неизвестная модель"
     var projectPath = ""
     var turnID = ""
-
-
+    var states: [String: TurnState] = [:]
+    var contexts: [String: (model: String, project: String, path: String)] = [:]
+    var responses: [String: TokenSample] = [:]
+    var legacy: [TokenSample] = []
+    var modernTurns = Set<String>()
+    var checkpoints: [String: Tokens] = [:]
+    var usage: Usage? {
+        guard let state = states.values.max(by: { $0.usage.timestamp < $1.usage.timestamp }) else { return nil }
+        var value = state.usage
+        let own = samples.filter { $0.localTurn == state.id }
+        value.tokens = Tokens(); own.forEach { value.tokens.add($0.tokens) }
+        value.isEstimate = own.contains { !$0.authoritative }
+        return value
+    }
+    var samples: [TokenSample] {
+        Array(responses.values) + legacy.filter { !modernTurns.contains($0.localTurn) }
+    }
+    private func ensureTurn(_ id: String, stamp: String) {
+        guard states[id] == nil else { return }
+        var value = current; value.timestamp = stamp
+        states[id] = TurnState(id: id, root: id, usage: value, projectPath: projectPath)
+    }
     func consume(_ data: Data) {
         pending.append(data)
         while let end = pending.firstIndex(of: 10) {
@@ -97,50 +122,77 @@ final class SessionReader {
     }
     func consume(_ obj: [String: Any]) {
         guard let p = obj["payload"] as? [String: Any] else { return }
-        if obj["type"] as? String == "session_meta" {
+        let stamp = obj["timestamp"] as? String ?? ""
+        switch obj["type"] as? String {
+        case "session_meta":
             projectPath = p["cwd"] as? String ?? ""
-            current.project = (p["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Codex"
+            current.project = projectPath.isEmpty ? "Codex" : URL(fileURLWithPath: projectPath).lastPathComponent
             current.session = p["id"] as? String ?? ""
             if let source = p["source"] as? [String: Any], source["subagent"] != nil { isChild = true }
-            return
-        }
-        if obj["type"] as? String == "turn_context" {
+        case "turn_context":
             model = p["model"] as? String ?? model
             turnID = p["turn_id"] as? String ?? turnID
             if let cwd = p["cwd"] as? String {
-                projectPath = cwd
-                current.project = URL(fileURLWithPath: cwd).lastPathComponent
+                projectPath = cwd; current.project = URL(fileURLWithPath: cwd).lastPathComponent
             }
-            return
-        }
-        guard obj["type"] as? String == "event_msg" else { return }
-        let stamp = obj["timestamp"] as? String ?? ""
-        switch p["type"] as? String {
-        case "task_started":
-            turnID = p["turn_id"] as? String ?? "\(current.session):\(stamp)"
-            current.tokens = Tokens(); current.running = true; hasTurn = true; turnHasUsage = false
-            current.timestamp = stamp; usage = current
-        case "task_complete", "turn_aborted":
-            current.running = false
-            current.timestamp = stamp; usage = current
-            hasTurn = false
-        case "token_count":
-            if let raw = p["rate_limits"] as? [String: Any], let snapshot = LimitSnapshot(raw, timestamp: stamp) { limit = snapshot }
-            guard let info = p["info"] as? [String: Any], let raw = info["total_token_usage"] as? [String: Any] else { return }
-            let next = Tokens(raw)
-            // Totals make duplicate token events idempotent. A reset starts a new counter epoch.
-            let delta = next.input < total.input || next.output < total.output ? next : next - total
-            total = next
-            guard delta != Tokens() else { return }
-            if !hasTurn { current.tokens = Tokens(); hasTurn = true }
-            current.tokens.add(delta); turnHasUsage = true
-            if let date = TokenSample.parseDate(stamp) {
-                let request = turnID.isEmpty ? "\(current.session):\(stamp)" : turnID
-                samples.append(TokenSample(id: "\(request)|\(stamp)|\(next.input)|\(next.output)",
-                    request: request, date: date, project: current.project,
-                    projectPath: projectPath, model: model, tokens: delta))
+            contexts[turnID] = (model, current.project, projectPath)
+            if states[turnID] != nil {
+                states[turnID]?.usage.project = current.project
+                states[turnID]?.projectPath = projectPath
             }
-            current.timestamp = stamp; usage = current
+        case "token_usage_record":
+            guard let response = p["response_id"] as? String, !response.isEmpty,
+                  let turn = p["turn_id"] as? String, !turn.isEmpty,
+                  let raw = p["usage"] as? [String: Any],
+                  raw["input_tokens"] is NSNumber, raw["output_tokens"] is NSNumber,
+                  let date = TokenSample.parseDate(stamp) else { return }
+            let root = p["root_turn_id"] as? String ?? turn
+            ensureTurn(turn, stamp: stamp)
+            states[turn]?.root = root
+            states[turn]?.usage.session = p["session_id"] as? String ?? current.session
+            // Late records cannot reopen a completed turn or change another turn's counter.
+            if stamp > states[turn]!.usage.timestamp { states[turn]?.usage.timestamp = stamp }
+            let context = contexts[turn] ?? (model, current.project, projectPath)
+            modernTurns.insert(turn)
+            if responses[response] == nil {
+                responses[response] = TokenSample(id: response, request: root, date: date,
+                    project: context.project, projectPath: context.path, model: context.model,
+                    tokens: Tokens(raw), localTurn: turn,
+                    session: p["session_id"] as? String ?? current.session, authoritative: true)
+            }
+            if let checkpoint = p["turn_token_usage"] as? [String: Any] {
+                let value = Tokens(checkpoint)
+                if value.input + value.output >= (checkpoints[turn].map { $0.input + $0.output } ?? 0) { checkpoints[turn] = value }
+            }
+        case "event_msg":
+            switch p["type"] as? String {
+            case "task_started":
+                turnID = p["turn_id"] as? String ?? "\(current.session):\(stamp)"
+                ensureTurn(turnID, stamp: stamp)
+                states[turnID]?.lifecycleTimestamp = stamp
+                states[turnID]?.usage.running = true
+                states[turnID]?.usage.timestamp = stamp
+            case "task_complete", "turn_aborted":
+                let turn = p["turn_id"] as? String ?? turnID
+                ensureTurn(turn, stamp: stamp)
+                states[turn]?.lifecycleTimestamp = stamp
+                states[turn]?.usage.running = false
+                states[turn]?.usage.timestamp = stamp
+            case "token_count":
+                if let raw = p["rate_limits"] as? [String: Any], let snapshot = LimitSnapshot(raw, timestamp: stamp) { limit = snapshot }
+                guard let info = p["info"] as? [String: Any], let raw = info["total_token_usage"] as? [String: Any] else { return }
+                let next = Tokens(raw)
+                let delta = next.input < total.input || next.output < total.output ? next : next - total
+                total = next
+                guard delta != Tokens(), let date = TokenSample.parseDate(stamp) else { return }
+                if turnID.isEmpty { turnID = "\(current.session):\(stamp)" }
+                ensureTurn(turnID, stamp: stamp)
+                states[turnID]?.usage.timestamp = stamp
+                legacy.append(TokenSample(id: "legacy|\(turnID)|\(stamp)|\(next.input)|\(next.output)",
+                    request: turnID, date: date, project: current.project, projectPath: projectPath,
+                    model: model, tokens: delta, localTurn: turnID, session: current.session))
+            default: break
+            }
         default: break
         }
     }
@@ -148,7 +200,11 @@ final class SessionReader {
         guard let f = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? f.close() }
         guard let size = try? f.seekToEnd() else { return }
-        if size < offset { offset = 0; pending = Data(); total = Tokens(); usage = nil; hasTurn = false; turnHasUsage = false; samples = []; limit = nil; model = "Неизвестная модель"; turnID = "" }
+        if size < offset {
+            offset = 0; pending = Data(); total = Tokens(); current = Usage(); isChild = false
+            states = [:]; contexts = [:]; responses = [:]; legacy = []; modernTurns = []
+            checkpoints = [:]; limit = nil; model = "Неизвестная модель"; projectPath = ""; turnID = ""
+        }
         guard size > offset else { return }
         do {
             try f.seek(toOffset: offset)
@@ -161,10 +217,62 @@ final class UsageMonitor {
     let root: URL
     var readers: [URL: SessionReader] = [:]
     init(root: URL) { self.root = root }
+    func mergedStates() -> [String: TurnState] {
+        var states: [String: TurnState] = [:]
+        for reader in readers.values {
+            for (id, value) in reader.states {
+                if let old = states[id] {
+                    if value.lifecycleTimestamp > old.lifecycleTimestamp ||
+                       (value.lifecycleTimestamp == old.lifecycleTimestamp && value.usage.timestamp > old.usage.timestamp) {
+                        states[id] = value
+                    }
+                    states[id]?.usage.timestamp = max(old.usage.timestamp, value.usage.timestamp)
+                    if value.root != id { states[id]?.root = value.root }
+                } else { states[id] = value }
+            }
+        }
+        return states
+    }
     func analyticsSamples() -> [TokenSample] {
+        let states = mergedStates()
+        let modern = readers.values.reduce(into: Set<String>()) { $0.formUnion($1.modernTurns) }
         var seen = Set<String>()
-        return readers.values.filter { !$0.isChild }.flatMap(\.samples)
-            .filter { seen.insert($0.id).inserted }.sorted { $0.date < $1.date }
+        // Deduplicate response IDs across files, forks and parent/child journal copies.
+        return readers.values.flatMap(\.samples).sorted {
+            let a = $0.model != "Неизвестная модель", b = $1.model != "Неизвестная модель"
+            if a != b { return a }
+            return $0.id < $1.id
+        }.filter {
+            ($0.authoritative || !modern.contains($0.localTurn)) && seen.insert($0.id).inserted
+        }.map { sample in
+            let parent = states[sample.request]
+            return TokenSample(id: sample.id, request: sample.request, date: sample.date,
+                project: parent?.usage.project ?? sample.project, projectPath: parent?.projectPath ?? sample.projectPath,
+                model: sample.model, tokens: sample.tokens, localTurn: sample.localTurn,
+                session: sample.session, authoritative: sample.authoritative)
+        }.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
+    }
+    func selectedUsage(now: Date = Date()) -> Usage? {
+        let states = mergedStates()
+        // Only the last turn in each session can remain live; a newer turn supersedes it.
+        let sessionLatest = Dictionary(grouping: states.values, by: { $0.usage.session }).values.compactMap {
+            $0.max { $0.usage.timestamp < $1.usage.timestamp }
+        }
+        // Old journals can end with an unmatched start after a crash. Keep their
+        // history, but do not revive a day-old silent turn as current work.
+        let activeRoots = Set(sessionLatest.filter {
+            $0.usage.running && (TokenSample.parseDate($0.usage.timestamp).map { now.timeIntervalSince($0) < 86_400 } ?? false)
+        }.map(\.root))
+        let candidates = states.values.filter { activeRoots.isEmpty || activeRoots.contains($0.root) }
+        guard let latest = candidates.max(by: { $0.usage.timestamp < $1.usage.timestamp }) else { return nil }
+        var value = states[latest.root]?.usage ?? latest.usage
+        value.timestamp = latest.usage.timestamp
+        value.running = activeRoots.contains(latest.root)
+        let samples = analyticsSamples().filter { $0.request == latest.root }
+        value.tokens = Tokens(); samples.forEach { value.tokens.add($0.tokens) }
+        value.isEstimate = samples.contains { !$0.authoritative }
+        value.remainingLimit = readers.values.compactMap(\.limit).max { $0.timestamp < $1.timestamp }?.remaining()
+        return value
     }
     func poll() -> Usage? {
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
@@ -174,15 +282,12 @@ final class UsageMonitor {
             guard let v = try? url.resourceValues(forKeys: Set(keys)) else { continue }
             candidates.append((url, v.contentModificationDate ?? .distantPast, v.fileSize ?? 0))
         }
-        // Bootstrap recent sessions; thereafter discover new and modified sessions regardless of age.
         let initial = readers.isEmpty
         for (url, _, size) in candidates.sorted(by: { $0.1 > $1.1 }).prefix(initial ? 12 : candidates.count) {
             if readers[url] == nil { readers[url] = SessionReader() }
             let reader = readers[url]!
             if reader.offset != UInt64(size) { reader.read(url) }
         }
-        var latest = readers.values.filter { !$0.isChild }.compactMap(\.usage).max { $0.timestamp < $1.timestamp }
-        latest?.remainingLimit = readers.values.compactMap(\.limit).max { $0.timestamp < $1.timestamp }?.remaining()
-        return latest
+        return selectedUsage()
     }
 }

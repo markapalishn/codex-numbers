@@ -6,7 +6,7 @@ INSTALL_DIR := $(HOME)/Applications
 SWIFTC := swiftc
 SOURCES := $(wildcard Sources/*.swift)
 
-.PHONY: help build run test clean install uninstall snapshot preview update
+.PHONY: help build run test clean install uninstall snapshot preview update audit
 help: ## Показать команды
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  make %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 build: ## Собрать приложение macOS
@@ -21,6 +21,11 @@ test: ## Проверить подсчёт токенов и чтение жур
 	@cp Tests/UsageTests.swift "$(BUILD_DIR)/tests/main.swift"
 	$(SWIFTC) Sources/Usage.swift Sources/Analytics.swift "$(BUILD_DIR)/tests/main.swift" -o "$(BUILD_DIR)/tests/usage-tests"
 	@"$(BUILD_DIR)/tests/usage-tests"
+audit: ## Сверить подсчёт с реальными записями Codex (локально)
+	@mkdir -p "$(BUILD_DIR)/audit"
+	@cp Tests/JournalAudit.swift "$(BUILD_DIR)/audit/main.swift"
+	$(SWIFTC) -O Sources/Usage.swift Sources/Analytics.swift "$(BUILD_DIR)/audit/main.swift" -o "$(BUILD_DIR)/audit/journal-audit"
+	@"$(BUILD_DIR)/audit/journal-audit"
 snapshot: build ## Показать текущие данные для диагностики
 	@"$(APP)/Contents/MacOS/CodexNumbers" --snapshot
 preview: build ## Сохранить изображение панели аналитики

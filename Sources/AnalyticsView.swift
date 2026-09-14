@@ -168,7 +168,13 @@ final class AnalyticsController: NSWindowController {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func update(_ values: [TokenSample]) {
-        let next = "\(values.count):\(values.last?.id ?? ""):\(Calendar.current.startOfDay(for: Date()))"
+        var hash = Hasher()
+        hash.combine(Calendar.current.startOfDay(for: Date()))
+        for value in values {
+            hash.combine(value.id); hash.combine(value.request); hash.combine(value.projectPath)
+            hash.combine(value.model); hash.combine(value.count); hash.combine(value.authoritative)
+        }
+        let next = String(hash.finalize())
         guard next != signature else { return }
         signature = next; samples = values
         if window?.isVisible == true { rebuild() }
@@ -195,10 +201,10 @@ final class AnalyticsController: NSWindowController {
     }
     func rebuild() {
         let summary = AnalyticsSummary(samples: samples, period: period, project: selectedProject, model: selectedModel)
-        totalLabel.stringValue = Usage.format(summary.total)
+        totalLabel.stringValue = (summary.isEstimate ? "≈" : "") + Usage.format(summary.total)
         totalLabel.toolTip = Usage.exact(summary.total) + " токенов"
         countLabel.stringValue = "\(summary.requestCount)"
-        averageLabel.stringValue = Usage.format(summary.requestCount == 0 ? 0 : summary.total / summary.requestCount)
+        averageLabel.stringValue = (summary.isEstimate ? "≈" : "") + Usage.format(summary.requestCount == 0 ? 0 : summary.total / summary.requestCount)
         detailLabel.stringValue = "Из кэша: \(summary.cachePercent)% входа   ·   Получено: \(Usage.format(summary.output))"
         chart.hourly = summary.hourly; chart.buckets = summary.buckets()
         let filters = [selectedProject.map { URL(fileURLWithPath: $0).lastPathComponent }, selectedModel].compactMap { $0 }
@@ -214,14 +220,14 @@ final class AnalyticsController: NSWindowController {
             let formatter = DateFormatter(); formatter.locale = Locale(identifier: "ru_RU"); formatter.dateFormat = "d MMM, HH:mm"
             for request in summary.requests.prefix(200) {
                 let title = "\(request.project) · \(formatter.string(from: request.date))"
-                addRow(title: title, subtitle: request.models, value: Usage.format(request.total), ratio: nil, actionIndex: nil, tooltip: Usage.exact(request.total) + " токенов")
+                addRow(title: title, subtitle: request.models, value: (request.isEstimate ? "≈" : "") + Usage.format(request.total), ratio: nil, actionIndex: nil, tooltip: Usage.exact(request.total) + " токенов")
             }
         } else {
             let groups = summary.groups(byModel: tabs.selectedSegment == 1)
             groupKeys = groups.map(\.key)
             for (index, group) in groups.enumerated() {
                 let share = Double(group.total) / Double(max(1, summary.total))
-                addRow(title: group.title, subtitle: "\(group.requests) запр. · \(Int((share*100).rounded()))%", value: Usage.format(group.total), ratio: share, actionIndex: index, tooltip: group.key + " · " + Usage.exact(group.total) + " токенов")
+                addRow(title: group.title, subtitle: "\(group.requests) запр. · \(Int((share*100).rounded()))%", value: (group.isEstimate ? "≈" : "") + Usage.format(group.total), ratio: share, actionIndex: index, tooltip: group.key + " · " + Usage.exact(group.total) + " токенов")
             }
         }
     }

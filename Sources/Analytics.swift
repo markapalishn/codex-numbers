@@ -8,6 +8,9 @@ struct TokenSample {
     let projectPath: String
     let model: String
     let tokens: Tokens
+    var localTurn: String = ""
+    var session: String = ""
+    var authoritative: Bool = false
     var count: Int { tokens.input + tokens.output }
     private static let fractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
@@ -21,6 +24,7 @@ struct AnalyticsGroup {
     let title: String
     let total: Int
     let requests: Int
+    let isEstimate: Bool
 }
 struct AnalyticsRequest {
     let id: String
@@ -28,6 +32,7 @@ struct AnalyticsRequest {
     let project: String
     let models: String
     let total: Int
+    let isEstimate: Bool
 }
 struct AnalyticsBucket {
     let date: Date
@@ -38,6 +43,7 @@ struct AnalyticsSummary {
     let start: Date
     let end: Date
     let hourly: Bool
+    var isEstimate: Bool { samples.contains { !$0.authoritative } }
     var total: Int { samples.reduce(0) { $0 + $1.count } }
     var input: Int { samples.reduce(0) { $0 + $1.tokens.input } }
     var cached: Int { samples.reduce(0) { $0 + $1.tokens.cached } }
@@ -59,13 +65,13 @@ struct AnalyticsSummary {
     }
     func groups(byModel: Bool) -> [AnalyticsGroup] {
         Dictionary(grouping: samples, by: { byModel ? $0.model : $0.projectPath }).map { key, values in
-            AnalyticsGroup(key: key, title: byModel ? key : (values.first?.project ?? key), total: values.reduce(0) { $0 + $1.count }, requests: Set(values.map(\.request)).count)
+            AnalyticsGroup(key: key, title: byModel ? key : (values.first?.project ?? key), total: values.reduce(0) { $0 + $1.count }, requests: Set(values.map(\.request)).count, isEstimate: values.contains { !$0.authoritative })
         }.sorted { $0.total == $1.total ? $0.key < $1.key : $0.total > $1.total }
     }
     var requests: [AnalyticsRequest] {
         Dictionary(grouping: samples, by: \.request).map { key, values in
             AnalyticsRequest(id: key, date: values.map(\.date).max()!, project: values.first!.project,
-                models: Set(values.map(\.model)).sorted().joined(separator: ", "), total: values.reduce(0) { $0 + $1.count })
+                models: Set(values.map(\.model)).sorted().joined(separator: ", "), total: values.reduce(0) { $0 + $1.count }, isEstimate: values.contains { !$0.authoritative })
         }.sorted { $0.date > $1.date }
     }
     func buckets(calendar: Calendar = .current) -> [AnalyticsBucket] {
