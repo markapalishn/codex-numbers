@@ -96,6 +96,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         }
                         capture(output)
+                        if !analytics.rowActions.isEmpty {
+                            let project = NSButton(); project.tag = 0
+                            analytics.selectGroup(project)
+                            capture(output.deletingPathExtension().appendingPathExtension("projects-expanded.png"))
+                        }
                         badge.wantsLayer = true
                         badge.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
                         badge.layer?.cornerRadius = 30

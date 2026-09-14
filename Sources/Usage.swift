@@ -78,6 +78,7 @@ struct TurnState {
     var usage: Usage
     var projectPath: String
     var lifecycleTimestamp = ""
+    var requestText = ""
 }
 
 final class SessionReader {
@@ -90,6 +91,7 @@ final class SessionReader {
     var model = "Неизвестная модель"
     var projectPath = ""
     var turnID = ""
+    var pendingRequestText = ""
     var states: [String: TurnState] = [:]
     var contexts: [String: (model: String, project: String, path: String)] = [:]
     var responses: [String: TokenSample] = [:]
@@ -111,6 +113,15 @@ final class SessionReader {
         guard states[id] == nil else { return }
         var value = current; value.timestamp = stamp
         states[id] = TurnState(id: id, root: id, usage: value, projectPath: projectPath)
+        if !pendingRequestText.isEmpty { states[id]?.requestText = pendingRequestText; pendingRequestText = "" }
+    }
+    private func receiveRequestText(_ raw: String, explicitTurn: String? = nil) {
+        let text = RequestText.clean(raw)
+        guard !text.isEmpty else { return }
+        let id = explicitTurn ?? turnID
+        if !id.isEmpty, states[id] != nil, explicitTurn != nil || states[id]!.usage.running {
+            if states[id]!.requestText.isEmpty { states[id]?.requestText = text }
+        } else { pendingRequestText = text }
     }
     func consume(_ data: Data) {
         pending.append(data)
@@ -140,6 +151,11 @@ final class SessionReader {
                 states[turnID]?.usage.project = current.project
                 states[turnID]?.projectPath = projectPath
             }
+        case "response_item":
+            if p["role"] as? String == "user", let parts = p["content"] as? [[String: Any]] {
+                let text = parts.filter { $0["type"] as? String == "input_text" }.compactMap { $0["text"] as? String }.joined(separator: "\n")
+                receiveRequestText(text)
+            }
         case "token_usage_record":
             guard let response = p["response_id"] as? String, !response.isEmpty,
                   let turn = p["turn_id"] as? String, !turn.isEmpty,
@@ -166,9 +182,15 @@ final class SessionReader {
             }
         case "event_msg":
             switch p["type"] as? String {
+            case "user_message":
+                if let text = p["message"] as? String { receiveRequestText(text, explicitTurn: p["turn_id"] as? String) }
             case "task_started":
                 turnID = p["turn_id"] as? String ?? "\(current.session):\(stamp)"
                 ensureTurn(turnID, stamp: stamp)
+                if !pendingRequestText.isEmpty, states[turnID]!.requestText.isEmpty {
+                    states[turnID]?.requestText = pendingRequestText
+                    pendingRequestText = ""
+                }
                 states[turnID]?.lifecycleTimestamp = stamp
                 states[turnID]?.usage.running = true
                 states[turnID]?.usage.timestamp = stamp
@@ -203,7 +225,7 @@ final class SessionReader {
         if size < offset {
             offset = 0; pending = Data(); total = Tokens(); current = Usage(); isChild = false
             states = [:]; contexts = [:]; responses = [:]; legacy = []; modernTurns = []
-            checkpoints = [:]; limit = nil; model = "Неизвестная модель"; projectPath = ""; turnID = ""
+            checkpoints = [:]; pendingRequestText = ""; limit = nil; model = "Неизвестная модель"; projectPath = ""; turnID = ""
         }
         guard size > offset else { return }
         do {
@@ -228,6 +250,7 @@ final class UsageMonitor {
                     }
                     states[id]?.usage.timestamp = max(old.usage.timestamp, value.usage.timestamp)
                     if value.root != id { states[id]?.root = value.root }
+                    if states[id]!.requestText.isEmpty { states[id]?.requestText = old.requestText.isEmpty ? value.requestText : old.requestText }
                 } else { states[id] = value }
             }
         }
@@ -249,7 +272,7 @@ final class UsageMonitor {
             return TokenSample(id: sample.id, request: sample.request, date: sample.date,
                 project: parent?.usage.project ?? sample.project, projectPath: parent?.projectPath ?? sample.projectPath,
                 model: sample.model, tokens: sample.tokens, localTurn: sample.localTurn,
-                session: sample.session, authoritative: sample.authoritative)
+                session: sample.session, authoritative: sample.authoritative, requestText: parent?.requestText ?? "")
         }.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
     }
     func selectedUsage(now: Date = Date()) -> Usage? {

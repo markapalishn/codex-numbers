@@ -11,6 +11,7 @@ struct TokenSample {
     var localTurn: String = ""
     var session: String = ""
     var authoritative: Bool = false
+    var requestText: String = ""
     var count: Int { tokens.input + tokens.output }
     private static let fractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
@@ -31,6 +32,8 @@ struct AnalyticsRequest {
     let date: Date
     let project: String
     let models: String
+    let text: String
+    var title: String { text.isEmpty ? "Запрос без текста" : RequestText.title(text) }
     let total: Int
     let isEstimate: Bool
 }
@@ -71,7 +74,7 @@ struct AnalyticsSummary {
     var requests: [AnalyticsRequest] {
         Dictionary(grouping: samples, by: \.request).map { key, values in
             AnalyticsRequest(id: key, date: values.map(\.date).max()!, project: values.first!.project,
-                models: Set(values.map(\.model)).sorted().joined(separator: ", "), total: values.reduce(0) { $0 + $1.count }, isEstimate: values.contains { !$0.authoritative })
+                models: Set(values.map(\.model)).sorted().joined(separator: ", "), text: values.first(where: { !$0.requestText.isEmpty })?.requestText ?? "", total: values.reduce(0) { $0 + $1.count }, isEstimate: values.contains { !$0.authoritative })
         }.sorted { $0.date > $1.date }
     }
     func buckets(calendar: Calendar = .current) -> [AnalyticsBucket] {
@@ -85,5 +88,19 @@ struct AnalyticsSummary {
             date = next
         }
         return result
+    }
+}
+
+// Titles are local excerpts, never generated with a model or sent over the network.
+enum RequestText {
+    static func clean(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let systemPrefixes = ["# AGENTS.md instructions", "<environment_context>", "<permissions instructions>", "<collaboration_mode>", "<app-context>", "<system-reminder>", "<recommended_plugins>"]
+        if systemPrefixes.contains(where: { trimmed.hasPrefix($0) }) { return "" }
+        return trimmed
+    }
+    static func title(_ value: String) -> String {
+        let compact = value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return compact.count > 100 ? String(compact.prefix(99)) + "…" : compact
     }
 }

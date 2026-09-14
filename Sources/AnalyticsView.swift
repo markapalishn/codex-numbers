@@ -92,6 +92,13 @@ final class AnalyticsController: NSWindowController {
     let tabs = NSSegmentedControl(labels: ["Проекты", "Модели", "Запросы"], trackingMode: .selectOne, target: nil, action: nil)
     let periods = NSSegmentedControl(labels: ["Сегодня", "7 дней", "30 дней", "Всё время"], trackingMode: .selectOne, target: nil, action: nil)
     var groupKeys: [String] = []
+    var expandedProjects = Set<String>()
+    enum RowAction {
+        case expand(String)
+        case filter(project: String?, model: String?)
+    }
+    var rowActions: [RowAction] = []
+    let scroll = NSScrollView()
     var signature = ""
 
     init() {
@@ -150,7 +157,6 @@ final class AnalyticsController: NSWindowController {
         stack.addArrangedSubview(filterButton)
         tabs.selectedSegment = 0; tabs.target = self; tabs.action = #selector(changeTab)
         stack.addArrangedSubview(tabs)
-        let scroll = NSScrollView()
         scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 5
         rows.translatesAutoresizingMaskIntoConstraints = false
@@ -172,7 +178,7 @@ final class AnalyticsController: NSWindowController {
         hash.combine(Calendar.current.startOfDay(for: Date()))
         for value in values {
             hash.combine(value.id); hash.combine(value.request); hash.combine(value.projectPath)
-            hash.combine(value.model); hash.combine(value.count); hash.combine(value.authoritative)
+            hash.combine(value.model); hash.combine(value.count); hash.combine(value.authoritative); hash.combine(value.requestText)
         }
         let next = String(hash.finalize())
         guard next != signature else { return }
@@ -194,12 +200,25 @@ final class AnalyticsController: NSWindowController {
     @objc func changeTab() { rebuild() }
     @objc func clearFilter() { selectedProject = nil; selectedModel = nil; rebuild() }
     @objc func selectGroup(_ sender: NSButton) {
-        guard groupKeys.indices.contains(sender.tag) else { return }
-        if tabs.selectedSegment == 0 { selectedProject = groupKeys[sender.tag] } else { selectedModel = groupKeys[sender.tag] }
-        tabs.selectedSegment = 2
+        guard rowActions.indices.contains(sender.tag) else { return }
+        switch rowActions[sender.tag] {
+        case .expand(let project):
+            if expandedProjects.contains(project) { expandedProjects.remove(project) } else { expandedProjects.insert(project) }
+        case .filter(let project, let model):
+            selectedProject = project; selectedModel = model; tabs.selectedSegment = 2
+            scroll.contentView.scroll(to: .zero)
+        }
         rebuild()
     }
+    func register(_ action: RowAction) -> Int { rowActions.append(action); return rowActions.count-1 }
     func rebuild() {
+        let position = scroll.contentView.bounds.origin
+        defer {
+            scroll.documentView?.layoutSubtreeIfNeeded()
+            scroll.contentView.scroll(to: position)
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        rowActions = []
         let summary = AnalyticsSummary(samples: samples, period: period, project: selectedProject, model: selectedModel)
         totalLabel.stringValue = (summary.isEstimate ? "≈" : "") + Usage.format(summary.total)
         totalLabel.toolTip = Usage.exact(summary.total) + " токенов"
@@ -219,27 +238,48 @@ final class AnalyticsController: NSWindowController {
         if tabs.selectedSegment == 2 {
             let formatter = DateFormatter(); formatter.locale = Locale(identifier: "ru_RU"); formatter.dateFormat = "d MMM, HH:mm"
             for request in summary.requests.prefix(200) {
-                let title = "\(request.project) · \(formatter.string(from: request.date))"
-                addRow(title: title, subtitle: request.models, value: (request.isEstimate ? "≈" : "") + Usage.format(request.total), ratio: nil, actionIndex: nil, tooltip: Usage.exact(request.total) + " токенов")
+                let title = request.title
+                let subtitle = "\(request.project) · \(formatter.string(from: request.date)) · \(request.models)"
+                let excerpt = request.text.count > 4000 ? String(request.text.prefix(4000)) + "…" : request.text
+                addRow(title: title, subtitle: subtitle, value: (request.isEstimate ? "≈" : "") + Usage.format(request.total), ratio: nil, actionIndex: nil, tooltip: (excerpt.isEmpty ? "Текст запроса отсутствует в журнале" : excerpt) + "\n\n" + Usage.exact(request.total) + " токенов")
             }
         } else {
             let groups = summary.groups(byModel: tabs.selectedSegment == 1)
             groupKeys = groups.map(\.key)
-            for (index, group) in groups.enumerated() {
+            for group in groups {
                 let share = Double(group.total) / Double(max(1, summary.total))
-                addRow(title: group.title, subtitle: "\(group.requests) запр. · \(Int((share*100).rounded()))%", value: (group.isEstimate ? "≈" : "") + Usage.format(group.total), ratio: share, actionIndex: index, tooltip: group.key + " · " + Usage.exact(group.total) + " токенов")
+                let isProject = tabs.selectedSegment == 0
+                let expanded = expandedProjects.contains(group.key)
+                let action = register(isProject ? .expand(group.key) : .filter(project: selectedProject, model: group.key))
+                let title = isProject ? (expanded ? "▾  " : "▸  ") + group.title : group.title
+                addRow(title: title, subtitle: "\(group.requests) запр. · \(Int((share*100).rounded()))%", value: (group.isEstimate ? "≈" : "") + Usage.format(group.total), ratio: share, actionIndex: action, tooltip: group.key + " · " + Usage.exact(group.total) + " токенов")
+                if isProject && expanded {
+                    let projectSummary = AnalyticsSummary(samples: samples, period: period, project: group.key, model: selectedModel)
+                    for model in projectSummary.groups(byModel: true) {
+                        let modelShare = Double(model.total) / Double(max(1, group.total))
+                        let action = register(.filter(project: group.key, model: model.key))
+                        addRow(title: model.title, subtitle: "\(model.requests) запр. · \(Int((modelShare*100).rounded()))% проекта", value: (model.isEstimate ? "≈" : "") + Usage.format(model.total), ratio: modelShare, actionIndex: action, tooltip: Usage.exact(model.total) + " токенов · Показать запросы", indent: 22)
+                    }
+                    let action = register(.filter(project: group.key, model: nil))
+                    addRow(title: "Все запросы проекта", subtitle: "", value: "", ratio: nil, actionIndex: action, indent: 22)
+                }
             }
         }
     }
-    func addRow(title: String, subtitle: String, value: String, ratio: Double?, actionIndex: Int?, tooltip: String? = nil) {
+    func addRow(title: String, subtitle: String, value: String, ratio: Double?, actionIndex: Int?, tooltip: String? = nil, indent: CGFloat = 0) {
         let row = NSView(); row.translatesAutoresizingMaskIntoConstraints = false
         row.toolTip = tooltip
-        let titleLabel = NSTextField(labelWithString: title); titleLabel.font = .systemFont(ofSize: 12, weight: .medium); titleLabel.lineBreakMode = .byTruncatingMiddle
+        let titleLabel = NSTextField(labelWithString: title); titleLabel.font = .systemFont(ofSize: 12, weight: .medium); titleLabel.lineBreakMode = .byTruncatingTail
         let subtitleLabel = NSTextField(labelWithString: subtitle); subtitleLabel.font = .systemFont(ofSize: 10); subtitleLabel.textColor = .secondaryLabelColor; subtitleLabel.lineBreakMode = .byTruncatingTail
         let valueLabel = NSTextField(labelWithString: value); valueLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        valueLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        titleLabel.toolTip = tooltip
+        subtitleLabel.toolTip = tooltip
         for label in [titleLabel, subtitleLabel, valueLabel] { label.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(label) }
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 2), titleLabel.topAnchor.constraint(equalTo: row.topAnchor, constant: 5),
+            titleLabel.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 2 + indent), titleLabel.topAnchor.constraint(equalTo: row.topAnchor, constant: 5),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: valueLabel.leadingAnchor, constant: -12),
             subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor), subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
             subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -8),
@@ -248,12 +288,14 @@ final class AnalyticsController: NSWindowController {
         if let ratio {
             let bar = NSView(); bar.wantsLayer = true; bar.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.35).cgColor; bar.layer?.cornerRadius = 1.5
             bar.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(bar)
-            NSLayoutConstraint.activate([bar.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 2), bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -3), bar.heightAnchor.constraint(equalToConstant: 3), bar.widthAnchor.constraint(equalTo: row.widthAnchor, multiplier: max(0.001, ratio))])
+            NSLayoutConstraint.activate([bar.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 2 + indent), bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -3), bar.heightAnchor.constraint(equalToConstant: 3), bar.widthAnchor.constraint(equalTo: row.widthAnchor, multiplier: max(0.001, ratio), constant: -(indent+8)*max(0.001, ratio))])
         }
         if let actionIndex {
             let button = NSButton(title: "", target: self, action: #selector(selectGroup(_:)))
             button.isBordered = false; button.tag = actionIndex; button.toolTip = tooltip
-            button.setAccessibilityLabel("\(title), \(value) токенов. Показать запросы")
+            let hint: String
+            if case .expand = rowActions[actionIndex] { hint = "Развернуть или свернуть модели" } else { hint = "Показать запросы" }
+            button.setAccessibilityLabel("\(title), \(value) токенов. \(hint)")
             button.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(button)
             NSLayoutConstraint.activate([button.leadingAnchor.constraint(equalTo: row.leadingAnchor), button.trailingAnchor.constraint(equalTo: row.trailingAnchor), button.topAnchor.constraint(equalTo: row.topAnchor), button.bottomAnchor.constraint(equalTo: row.bottomAnchor)])
         }
