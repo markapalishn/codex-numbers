@@ -6,7 +6,7 @@ INSTALL_DIR := $(HOME)/Applications
 SWIFTC := swiftc
 SOURCES := $(wildcard Sources/*.swift)
 
-.PHONY: help build run test clean install uninstall snapshot preview
+.PHONY: help build run test clean install uninstall snapshot preview update
 help: ## Показать команды
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  make %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 build: ## Собрать приложение macOS
@@ -27,6 +27,10 @@ preview: build ## Сохранить изображение панели ана�
 	@"$(APP)/Contents/MacOS/CodexNumbers" --preview "$(BUILD_DIR)/analytics-preview.png"
 install: build ## Установить и включить автозапуск при входе
 	@python3 scripts/install.py install "$(APP)" "$(INSTALL_DIR)"
+update: ## Загрузить обновления и переустановить приложение
+	@git diff --quiet && git diff --cached --quiet || { echo "Сначала сохраните локальные изменения в Git."; exit 1; }
+	git pull --ff-only
+	$(MAKE) install
 uninstall: ## Отключить автозапуск и удалить установленную копию
 	@python3 scripts/install.py uninstall "$(APP)" "$(INSTALL_DIR)"
 clean: ## Удалить только артефакты сборки
