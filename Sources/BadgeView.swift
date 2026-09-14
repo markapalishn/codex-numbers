@@ -65,12 +65,5 @@ final class BadgeView: ClickableBadge {
         }
         text("Использовано", x: ringX + 28, y: 10, font: small, color: .secondaryLabelColor)
         text(used.map { "\($0)%" } ?? "—", x: ringX + 27, y: 25, font: Self.numberFont, color: .labelColor)
-        let arrowX = bounds.width - 17
-        let arrow = NSBezierPath()
-        arrow.lineWidth = 1.5; arrow.lineCapStyle = .round; arrow.lineJoinStyle = .round
-        arrow.move(to: NSPoint(x: arrowX-3, y: 27))
-        arrow.line(to: NSPoint(x: arrowX, y: 30))
-        arrow.line(to: NSPoint(x: arrowX-3, y: 33))
-        (hovered ? accent : NSColor.tertiaryLabelColor).setStroke(); arrow.stroke()
     }
 }

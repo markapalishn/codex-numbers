@@ -1,6 +1,7 @@
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    var item: NSStatusItem!
     var panel: NSPanel!
     var badge: BadgeView!
     var timer: Timer?
@@ -15,6 +16,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let icon = NSImage(systemSymbolName: "chart.bar.fill", accessibilityDescription: "Codex Numbers") {
+            icon.isTemplate = true
+            item.button?.image = icon
+        } else { item.button?.title = "◈" }
+        item.button?.toolTip = "Codex Numbers"
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 412, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .floating
         panel.isFloatingPanel = true
@@ -175,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         details.target = self
         let quit = menu.addItem(withTitle: "Завершить Codex Numbers", action: #selector(quitApp), keyEquivalent: "q"); quit.target = self
         badge.menu = menu
+        item.menu = menu.copy() as? NSMenu
     }
     @objc func showAnalytics() { analytics.present(near: panel) }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
