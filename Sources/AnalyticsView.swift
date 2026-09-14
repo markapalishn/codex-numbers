@@ -85,7 +85,6 @@ final class AnalyticsController: NSWindowController {
     let totalLabel = NSTextField(labelWithString: "—")
     let countLabel = NSTextField(labelWithString: "—")
     let averageLabel = NSTextField(labelWithString: "—")
-    let detailLabel = NSTextField(labelWithString: "")
     let chart = TokenChart()
     let rows = NSStackView()
     let filterButton = NSButton(title: "Все проекты и модели", target: nil, action: nil)
@@ -147,8 +146,6 @@ final class AnalyticsController: NSWindowController {
             column.addArrangedSubview(caption); metrics.addArrangedSubview(column)
         }
         stack.addArrangedSubview(metrics); metrics.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        detailLabel.font = .systemFont(ofSize: 11); detailLabel.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(detailLabel)
         stack.addArrangedSubview(chart)
         chart.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         chart.heightAnchor.constraint(equalToConstant: 135).isActive = true
@@ -224,7 +221,6 @@ final class AnalyticsController: NSWindowController {
         totalLabel.toolTip = Usage.exact(summary.total) + " токенов"
         countLabel.stringValue = "\(summary.requestCount)"
         averageLabel.stringValue = (summary.isEstimate ? "≈" : "") + Usage.format(summary.requestCount == 0 ? 0 : summary.total / summary.requestCount)
-        detailLabel.stringValue = "Из кэша: \(summary.cachePercent)% входа   ·   Получено: \(Usage.format(summary.output))"
         chart.hourly = summary.hourly; chart.buckets = summary.buckets()
         let filters = [selectedProject.map { URL(fileURLWithPath: $0).lastPathComponent }, selectedModel].compactMap { $0 }
         filterButton.title = filters.isEmpty ? "Все проекты и модели" : filters.joined(separator: " · ") + "  × Сбросить"
