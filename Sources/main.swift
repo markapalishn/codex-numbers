@@ -1,7 +1,6 @@
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    var item: NSStatusItem!
     var panel: NSPanel!
     var badge: BadgeView!
     var timer: Timer?
@@ -16,10 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "◈ —"
-        item.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 412, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 182, height: 72), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
@@ -62,8 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !panel.setFrameUsingName("CodexNumbersPanel") {
             if let screen = NSScreen.main { panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX-590, y: screen.visibleFrame.minY+24)) }
         }
-        panel.setContentSize(NSSize(width: 412, height: 72))
-        if !UserDefaults.standard.bool(forKey: "panelHidden") { panel.orderFrontRegardless() }
+        panel.setContentSize(NSSize(width: 182, height: 72))
+        panel.orderFrontRegardless()
         analytics = AnalyticsController()
         updateMenu()
         refresh()
@@ -118,7 +114,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let usage else { return }
                 current = usage
                 animateNumbers(to: usage)
-                item.button?.toolTip = usage.line + "\n" + usage.project
                 updateMenu()
                 panel.saveFrame(usingName: "CodexNumbersPanel")
             }
@@ -127,10 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func renderNumbers(_ usage: Usage) {
         displayed = usage
         badge.usage = usage
-        item.button?.title = "◈ " + Usage.format(usage.requestTokens) + (usage.running ? " ↻" : "")
     }
     func fitPanel(for usages: [Usage]) {
-        let width = usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 412
+        let width = usages.map { BadgeView.preferredWidth(for: $0) + 12 }.max() ?? 182
         var frame = panel.frame
         frame.size.width = ceil(width)
         if let screen = panel.screen ?? NSScreen.main {
@@ -143,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         numberAnimation = nil
         guard let start = displayed,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              start.tokens != target.tokens || start.remainingLimit != target.remainingLimit else {
+              start.tokens != target.tokens else {
             renderNumbers(target)
             fitPanel(for: [target])
             return
@@ -177,28 +171,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func updateMenu() {
         let menu = NSMenu()
-        func info(_ title: String) { let entry = NSMenuItem(title: title, action: nil, keyEquivalent: ""); entry.isEnabled = false; menu.addItem(entry) }
-        info(current.map { "\($0.project) · \($0.running ? "в работе" : "последний запрос")" } ?? "Ожидание Codex")
-        if let u = current {
-            info(u.line)
-        }
-        menu.addItem(.separator())
         let details = menu.addItem(withTitle: "Аналитика", action: #selector(showAnalytics), keyEquivalent: "")
         details.target = self
-        let toggle = menu.addItem(withTitle: panel.isVisible ? "Скрыть индикатор" : "Показать индикатор", action: #selector(togglePanel), keyEquivalent: "")
-        toggle.target = self
-        let reset = menu.addItem(withTitle: "Вернуть индикатор на экран", action: #selector(resetPanel), keyEquivalent: ""); reset.target = self
         let quit = menu.addItem(withTitle: "Завершить Codex Numbers", action: #selector(quitApp), keyEquivalent: "q"); quit.target = self
-        item.menu = menu
+        badge.menu = menu
     }
     @objc func showAnalytics() { analytics.present(near: panel) }
-    @objc func togglePanel() {
-        if panel.isVisible { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
-        UserDefaults.standard.set(!panel.isVisible, forKey: "panelHidden"); updateMenu()
-    }
-    @objc func resetPanel() {
-        if let screen = NSScreen.main { panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX-panel.frame.width-20, y: screen.visibleFrame.minY+24)) }
-        panel.orderFrontRegardless(); UserDefaults.standard.set(false, forKey: "panelHidden"); updateMenu()
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        panel.orderFrontRegardless()
+        return true
     }
     @objc func quitApp() { panel.saveFrame(usingName: "CodexNumbersPanel"); NSApp.terminate(nil) }
 }
