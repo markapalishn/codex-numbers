@@ -12,6 +12,7 @@ final class BadgeView: ClickableBadge {
     }
     private var flameTimer: Timer?
     private var phase: Double = 0
+    private var lastFlameFrame: TimeInterval = 0
     private var intensity: Double {
         let count = Double(usage?.requestTokens ?? 0)
         guard count > 0 else { return 0 }
@@ -26,15 +27,21 @@ final class BadgeView: ClickableBadge {
         let animate = intensity > 0 && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if !animate { flameTimer?.invalidate(); flameTimer = nil; phase = 0; return }
         guard flameTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+        lastFlameFrame = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 self.flameTimer?.invalidate(); self.flameTimer = nil; self.phase = 0; self.needsDisplay = true; return
             }
+            let now = ProcessInfo.processInfo.systemUptime
+            let elapsed = min(1.0 / 15, max(0, now - self.lastFlameFrame))
+            self.lastFlameFrame = now
             guard self.window?.isVisible == true else { return }
-            self.phase += 0.10 + self.intensity * 0.15
+            // Time-based motion preserves speed at 60 FPS and skips missed frames.
+            self.phase += elapsed * (3 + self.intensity * 4.5)
             self.setNeedsDisplay(NSRect(x: 12, y: 5, width: 39, height: 49))
         }
+        timer.tolerance = 0.001
         flameTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
@@ -53,6 +60,8 @@ final class BadgeView: ClickableBadge {
         }
         let small = NSFont.systemFont(ofSize: 10, weight: .medium)
         drawFlame()
+        // Flame-only frames do not redraw or measure the text and limit ring.
+        if dirtyRect.maxX < 55 { return }
         text(usage?.running == true ? "Запрос · в работе" : "Запрос", x: 58, y: 10, font: small, color: .secondaryLabelColor)
         let count = usage.map { Usage.exact($0.requestTokens) } ?? "—"
         text(count, x: 57, y: 25, font: Self.numberFont, color: .labelColor)
