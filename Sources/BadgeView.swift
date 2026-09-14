@@ -53,7 +53,7 @@ final class BadgeView: ClickableBadge {
         }
         let small = NSFont.systemFont(ofSize: 10, weight: .medium)
         drawFlame()
-        text(usage?.running == true ? "Запрос · в работе" : "Запрос · ожидание", x: 58, y: 10, font: small, color: .secondaryLabelColor)
+        text(usage?.running == true ? "Запрос · в работе" : "Запрос", x: 58, y: 10, font: small, color: .secondaryLabelColor)
         let count = usage.map { Usage.exact($0.requestTokens) } ?? "—"
         text(count, x: 57, y: 25, font: Self.numberFont, color: .labelColor)
         let numberWidth = (count as NSString).size(withAttributes: [.font: Self.numberFont]).width
@@ -82,14 +82,14 @@ final class BadgeView: ClickableBadge {
         let strength = intensity
         guard strength > 0 else {
             NSColor.tertiaryLabelColor.withAlphaComponent(0.3).setFill()
-            NSBezierPath(roundedRect: NSRect(x: 25, y: 43, width: 12, height: 3), xRadius: 1.5, yRadius: 1.5).fill()
+            NSBezierPath(roundedRect: NSRect(x: 26, y: 29, width: 10, height: 2), xRadius: 1.5, yRadius: 1.5).fill()
             return
         }
         let sway = sin(phase) * (0.08 + strength * 0.09)
         let bounce = sin(phase * 1.9)
-        let height = CGFloat(13 + 29 * strength + bounce * 2 * strength)
-        let width = CGFloat(12 + 22 * strength - bounce * strength)
-        let origin = NSPoint(x: 31 - width / 2, y: 49 - height)
+        let height = CGFloat(10 + 16 * strength + bounce * strength)
+        let width = CGFloat(9 + 12 * strength - bounce * strength * 0.5)
+        let origin = NSPoint(x: 31 - width / 2, y: 30 - height / 2)
         func p(_ x: Double, _ y: Double) -> NSPoint {
             NSPoint(x: origin.x + CGFloat(x) * width, y: origin.y + CGFloat(y) * height)
         }
@@ -129,9 +129,9 @@ final class BadgeView: ClickableBadge {
                 let cycle = (phase * 0.11 + Double(index) * 0.5).truncatingRemainder(dividingBy: 1)
                 let opacity = sin(cycle * .pi) * (strength-0.55) * 1.5
                 NSColor.systemOrange.withAlphaComponent(opacity).setFill()
-                let x = 21 + CGFloat(index)*17 + CGFloat(sin(phase + Double(index))) * 2
-                let y = max(3, origin.y + 8 - CGFloat(cycle) * 16)
-                NSBezierPath(ovalIn: NSRect(x: x, y: y, width: 2, height: 3)).fill()
+                let x = 24 + CGFloat(index)*12 + CGFloat(sin(phase + Double(index)))
+                let y = max(9, origin.y + 5 - CGFloat(cycle) * 10)
+                NSBezierPath(ovalIn: NSRect(x: x, y: y, width: 1.5, height: 2)).fill()
             }
         }
     }
