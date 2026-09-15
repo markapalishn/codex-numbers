@@ -1,0 +1,48 @@
+name: Publish macOS app
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without the v prefix, for example 1.2.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Normalize version
+        run: echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: make test
+
+      - name: Build release files
+        run: make package VERSION="$VERSION"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="v$VERSION"
+          fi
+          gh release create "$TAG" \
+            "build/release/Codex-Numbers-$VERSION.zip" \
+            "build/release/Codex-Numbers-$VERSION.dmg" \
+            --title "Codex Numbers $VERSION" \
+            --generate-notes

@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        installLoginAgentIfNeeded()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "—"
         item.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
@@ -73,6 +74,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
         timer?.tolerance = 0.3
     }
+
+    private func installLoginAgentIfNeeded() {
+        let appURL = Bundle.main.bundleURL.standardizedFileURL
+        let applicationsDirectories = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications", isDirectory: true)
+        ]
+        guard applicationsDirectories.contains(where: { appURL.path.hasPrefix($0.path + "/") }) else { return }
+
+        let label = "local.codex-numbers"
+        let agentURL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+        guard !FileManager.default.fileExists(atPath: agentURL.path) else { return }
+
+        let configuration: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [Bundle.main.executablePath ?? appURL.appendingPathComponent("Contents/MacOS/CodexNumbers").path],
+            "RunAtLoad": true,
+            "KeepAlive": ["SuccessfulExit": false],
+            "ThrottleInterval": 10
+        ]
+
+        do {
+            try FileManager.default.createDirectory(at: agentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try PropertyListSerialization.data(fromPropertyList: configuration, format: .xml, options: 0)
+            try data.write(to: agentURL, options: .atomic)
+        } catch {
+            try? FileManager.default.removeItem(at: agentURL)
+        }
+    }
+
     func refresh() {
         guard !polling else { return }
         polling = true
