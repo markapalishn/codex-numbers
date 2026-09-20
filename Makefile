@@ -9,7 +9,6 @@ ARCHS ?= arm64 x86_64
 MACOS_VERSION ?= 26.0
 RELEASE_DIR := $(BUILD_DIR)/release
 RELEASE_NAME := Codex-Numbers-$(VERSION)
-RELEASE_ZIP := $(RELEASE_DIR)/$(RELEASE_NAME).zip
 RELEASE_DMG := $(RELEASE_DIR)/$(RELEASE_NAME).dmg
 DMG_STAGING := $(RELEASE_DIR)/dmg
 SOURCES := $(wildcard Sources/*.swift)
@@ -56,15 +55,13 @@ update: ## Загрузить обновления и переустановит
 	@git diff --quiet && git diff --cached --quiet || { echo "Сначала сохраните локальные изменения в Git."; exit 1; }
 	git pull --ff-only
 	$(MAKE) install
-package: build ## Создать ZIP и DMG для GitHub Releases
+package: build ## Создать DMG для GitHub Releases
 	@rm -rf "$(RELEASE_DIR)"
 	@mkdir -p "$(DMG_STAGING)"
-	@ditto -c -k --keepParent "$(APP)" "$(RELEASE_ZIP)"
 	@cp -R "$(APP)" "$(DMG_STAGING)/$(APP_NAME).app"
 	@ln -sfn /Applications "$(DMG_STAGING)/Программы"
 	@hdiutil create -quiet -volname "$(APP_NAME)" -srcfolder "$(DMG_STAGING)" -ov -format UDZO "$(RELEASE_DMG)"
 	@rm -rf "$(DMG_STAGING)"
-	@echo "Готово: $(RELEASE_ZIP)"
 	@echo "Готово: $(RELEASE_DMG)"
 uninstall: ## Отключить автозапуск и удалить установленную копию
 	@python3 scripts/install.py uninstall "$(APP)" "$(INSTALL_DIR)"
