@@ -11,8 +11,10 @@ final class BadgeView: ClickableBadge {
                 invalidateLimit()
             }
             if oldValue?.requestTokens != usage?.requestTokens || oldValue?.isEstimate != usage?.isEstimate {
-                countText = usage.map { ($0.isEstimate ? "≈" : "") + Usage.exact($0.requestTokens) } ?? "—"
-                countFont = Self.fittedNumberFont(for: countText, width: Self.requestNumberWidth)
+                countText = usage.map { ($0.isEstimate ? "≈" : "") + Usage.format($0.requestTokens) } ?? "—"
+                countShowsUnit = (usage?.requestTokens ?? 0) < 1000
+                let availableWidth = Self.requestNumberWidth - (countShowsUnit ? Self.unitGap + Self.unitWidth : 0)
+                countFont = Self.fittedNumberFont(for: countText, width: availableWidth)
                 countWidth = (countText as NSString).size(withAttributes: [.font: countFont]).width
             }
             updateLimitRotation()
@@ -34,11 +36,11 @@ final class BadgeView: ClickableBadge {
     private static let unitWidth = (unitText as NSString).size(withAttributes: [.font: unitFont]).width
     private static let limitCaptionFont = NSFont.systemFont(ofSize: 10, weight: .medium)
     static let collapsedWidth: CGFloat = 144
-    static let expandedWidth: CGFloat = 384
+    static let expandedWidth: CGFloat = 328
     private let limitWidth = collapsedWidth
     private static let ringInset = contentPadding + 1.25
     private static let limitNumberWidth = collapsedWidth - ringInset - 27 - contentPadding
-    private static let requestNumberWidth = expandedWidth - collapsedWidth - requestTextX - unitGap - unitWidth - contentPadding
+    private static let requestNumberWidth = expandedWidth - collapsedWidth - requestTextX - contentPadding
     private var measuredResetDays: Int?
     private var resetNumberFont = numberFont
     private var limitRotationTimer: Timer?
@@ -49,6 +51,7 @@ final class BadgeView: ClickableBadge {
     private var phase: Double = 0
     private var accessibilityText = ""
     private var countText = "—"
+    private var countShowsUnit = true
     private var countWidth: CGFloat = 0
     private var countFont = numberFont
     private var gradientMix: CGFloat = -1
@@ -163,7 +166,7 @@ final class BadgeView: ClickableBadge {
         invalidateLimit()
     }
     private func updateAccessibilityLabel() {
-        let count = countText
+        let count = (usage?.isEstimate == true ? "≈" : "") + Usage.exact(usage?.requestTokens ?? 0)
         let used = usage?.remainingLimit.map { "\(100 - $0)%" } ?? "—"
         let request = usage?.running == true ? "\(usage!.requestCaption): \(count) токенов. " : ""
         let limit = showsReset && resetDays() != nil
@@ -196,7 +199,9 @@ final class BadgeView: ClickableBadge {
                 let count = countText
                 text(count, x: Self.requestTextX, y: 25 + Self.numberFont.ascender - countFont.ascender, font: countFont, color: .labelColor)
                 let numberWidth = countWidth
-                text(Self.unitText, x: Self.requestTextX + numberWidth + Self.unitGap, y: 32, font: Self.unitFont, color: .secondaryLabelColor)
+                if countShowsUnit {
+                    text(Self.unitText, x: Self.requestTextX + numberWidth + Self.unitGap, y: 32, font: Self.unitFont, color: .secondaryLabelColor)
+                }
             }
             NSGraphicsContext.restoreGraphicsState()
         }

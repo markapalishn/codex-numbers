@@ -44,12 +44,29 @@ struct Usage {
     var session = ""
     static func format(_ n: Int) -> String {
         if n < 1000 { return "\(n)" }
-        if n < 1_000_000 {
-            let number = String(format: n < 100_000 ? "%.1f" : "%.0f", Double(n)/1000)
-            let compact = number.hasSuffix(".0") ? String(number.dropLast(2)) : number
-            return compact.replacingOccurrences(of: ".", with: ",") + " тыс."
+        let units: [(Double, String)] = [
+            (1_000, "тыс."), (1_000_000, "млн"),
+            (1_000_000_000, "млрд"), (1_000_000_000_000, "трлн"),
+            (1_000_000_000_000_000, "квадрлн"),
+            (1_000_000_000_000_000_000, "квинтлн")
+        ]
+        var index = 0
+        while index + 1 < units.count && Double(n) >= units[index + 1].0 { index += 1 }
+        while true {
+            let places = index == 0 ? (n < 100_000 ? 1 : 0) : 2
+            let value = Double(n) / units[index].0
+            let precision = pow(10.0, Double(places))
+            if index + 1 < units.count && (value * precision).rounded() / precision >= 1000 {
+                index += 1
+                continue
+            }
+            var number = String(format: "%.*f", places, value)
+            if number.contains(".") {
+                while number.hasSuffix("0") { number.removeLast() }
+                if number.hasSuffix(".") { number.removeLast() }
+            }
+            return number.replacingOccurrences(of: ".", with: ",") + " " + units[index].1
         }
-        return String(format: "%.2f", Double(n)/1_000_000).replacingOccurrences(of: ".", with: ",") + " млн"
     }
     var requestTokens: Int { countMode.count(tokens) }
     var badgeUsage: Usage {

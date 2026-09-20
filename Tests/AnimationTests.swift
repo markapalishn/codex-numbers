@@ -171,9 +171,13 @@ hugeUsage.tokens = Tokens(["input_tokens": Int.max])
 for (name, example) in [("badge-compact", compactUsage), ("badge-estimate", largeUsage), ("badge-parallel", parallelUsage), ("badge-huge", hugeUsage)] {
     badge.requestVisibility = 1; badge.usage = example
     window.setContentSize(NSSize(width: BadgeView.preferredWidth(for: example), height: 60))
+    if name == "badge-estimate" {
+        check(badge.accessibilityLabel()?.contains(Usage.exact(1_000_000)) == true,
+              "VoiceOver must keep the exact token count when the badge abbreviates it")
+    }
     try capture(badge, name)
 }
-for (name, count) in [("badge-low", 10_000), ("badge-high", 1_000_000), ("badge-idle", 0)] {
+for (name, count) in [("badge-low", 10_000), ("badge-thousands", 200_000), ("badge-high", 1_000_000), ("badge-idle", 0)] {
     usage.tokens = Tokens(["input_tokens": count]); usage.running = count > 0
     badge.requestVisibility = usage.running ? 1 : 0
     badge.usage = usage

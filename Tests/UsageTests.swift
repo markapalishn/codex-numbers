@@ -177,7 +177,11 @@ check(twoWindows.current(now: auditNow.timeIntervalSince1970)?.remaining == 37 &
       twoWindows.current(now: auditNow.timeIntervalSince1970)?.duration == 604_800,
       "Reset time belongs to the limit window whose usage is displayed")
 check(LimitSnapshot(["limit_id": "another-model"], timestamp: "") == nil, "Unrelated limit ignored")
-check(Usage.format(105000) == "105 тыс." && Usage.format(1400) == "1,4 тыс.", "Formatting")
+check(Usage.format(999) == "999" && Usage.format(1400) == "1,4 тыс." &&
+      Usage.format(200_000) == "200 тыс." && Usage.format(999_999) == "1 млн" &&
+      Usage.format(1_000_000) == "1 млн" && Usage.format(2_500_000) == "2,5 млн" &&
+      Usage.format(1_000_000_000) == "1 млрд" &&
+      Usage.format(Int.max) == "9,22 квинтлн", "Compact token formatting")
 let early = reader("early")
 early.consume(["type": "response_item", "payload": ["role": "user", "content": [["type": "input_text", "text": "Сообщение перед стартом"]]]])
 early.consume(event("task_started", ["turn_id": "early-turn"]))
