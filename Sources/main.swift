@@ -1,6 +1,7 @@
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private static let badgeHiddenKey = "BadgeHidden"
     var item: NSStatusItem!
     var panel: NSPanel!
     var badge: BadgeView!
@@ -67,7 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let screen = NSScreen.main { panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX-panel.frame.width-24, y: screen.visibleFrame.minY+24)) }
         }
         panel.setContentSize(NSSize(width: BadgeView.collapsedWidth + 12, height: 72))
-        panel.orderFrontRegardless()
+        if !UserDefaults.standard.bool(forKey: Self.badgeHiddenKey) {
+            panel.orderFrontRegardless()
+        }
         analytics = AnalyticsController()
         analytics.countMode = countMode
         analytics.onCountModeChange = { [weak self] mode in self?.setCountMode(mode) }
@@ -271,6 +274,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         let details = menu.addItem(withTitle: "Аналитика", action: #selector(showAnalytics), keyEquivalent: "")
         details.target = self
+        let visibility = menu.addItem(withTitle: panel.isVisible ? "Скрыть плашку" : "Показать плашку", action: #selector(toggleBadgeVisibility), keyEquivalent: "")
+        visibility.target = self
         menu.addItem(.separator())
         let modeMenu = NSMenu()
         for (index, mode) in TokenCountMode.allCases.enumerated() {
@@ -303,6 +308,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setCountMode(TokenCountMode.allCases[sender.tag])
     }
     @objc func showAnalytics() { analytics.present(near: panel) }
+    @objc func toggleBadgeVisibility() {
+        if panel.isVisible {
+            panel.saveFrame(usingName: "CodexNumbersPanel")
+            panel.orderOut(nil)
+        } else {
+            panel.orderFrontRegardless()
+        }
+        UserDefaults.standard.set(!panel.isVisible, forKey: Self.badgeHiddenKey)
+        updateMenu()
+    }
     func toggleAnalytics() {
         if analytics.window?.isVisible == true {
             analytics.close()
@@ -312,6 +327,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         panel.orderFrontRegardless()
+        UserDefaults.standard.set(false, forKey: Self.badgeHiddenKey)
+        updateMenu()
         return true
     }
     @objc func quitApp() { panel.saveFrame(usingName: "CodexNumbersPanel"); NSApp.terminate(nil) }
