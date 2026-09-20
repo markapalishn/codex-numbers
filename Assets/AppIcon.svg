@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+  <rect x="84" y="100" width="856" height="856" rx="208" fill="#283247" opacity="0.16" filter="url(#shadow)"/>
+  <rect x="72" y="72" width="880" height="880" rx="208" fill="#fff" stroke="#f0f1f4" stroke-width="2"/>
+  <g fill="none" stroke="#2a2e37" stroke-width="56" stroke-linecap="round">
+    <path d="M 360.5 287.3 A 271 271 0 1 1 367.9 741.7"/>
+  </g>
+  <circle cx="274.9" cy="643.4" r="39" fill="#2a2e37"/>
+</svg>

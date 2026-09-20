@@ -14,17 +14,39 @@ DMG_STAGING := $(RELEASE_DIR)/dmg
 SOURCES := $(wildcard Sources/*.swift)
 UI_SOURCES := $(filter-out Sources/main.swift,$(SOURCES))
 UI_TEST_DIR := $(BUILD_DIR)/ui-tests
+ICON_SOURCE := Assets/AppIcon.svg
+ICONSET := $(BUILD_DIR)/AppIcon.iconset
+ICON_FILE := $(BUILD_DIR)/AppIcon.icns
 
-.PHONY: help build run test clean install uninstall snapshot preview update audit test-ui package
+.PHONY: help build icon run test clean install uninstall snapshot preview update audit test-ui package
 help: ## Показать команды
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  make %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-build: ## Собрать приложение macOS
-	@mkdir -p "$(APP)/Contents/MacOS" "$(BUILD_DIR)/architectures"
+$(ICON_FILE): $(ICON_SOURCE)
+	@mkdir -p "$(ICONSET)"
+	@sips -s format png "$(ICON_SOURCE)" --out "$(BUILD_DIR)/AppIcon-1024.png" >/dev/null
+	@for size in 16 32 64 128 256 512; do \
+		sips -z $$size $$size "$(BUILD_DIR)/AppIcon-1024.png" --out "$(BUILD_DIR)/AppIcon-$$size.png" >/dev/null || exit $$?; \
+	done
+	@cp "$(BUILD_DIR)/AppIcon-16.png" "$(ICONSET)/icon_16x16.png"
+	@cp "$(BUILD_DIR)/AppIcon-32.png" "$(ICONSET)/icon_16x16@2x.png"
+	@cp "$(BUILD_DIR)/AppIcon-32.png" "$(ICONSET)/icon_32x32.png"
+	@cp "$(BUILD_DIR)/AppIcon-64.png" "$(ICONSET)/icon_32x32@2x.png"
+	@cp "$(BUILD_DIR)/AppIcon-128.png" "$(ICONSET)/icon_128x128.png"
+	@cp "$(BUILD_DIR)/AppIcon-256.png" "$(ICONSET)/icon_128x128@2x.png"
+	@cp "$(BUILD_DIR)/AppIcon-256.png" "$(ICONSET)/icon_256x256.png"
+	@cp "$(BUILD_DIR)/AppIcon-512.png" "$(ICONSET)/icon_256x256@2x.png"
+	@cp "$(BUILD_DIR)/AppIcon-512.png" "$(ICONSET)/icon_512x512.png"
+	@cp "$(BUILD_DIR)/AppIcon-1024.png" "$(ICONSET)/icon_512x512@2x.png"
+	@iconutil -c icns "$(ICONSET)" -o "$(ICON_FILE)"
+icon: $(ICON_FILE) ## Собрать иконку приложения
+build: $(ICON_FILE) ## Собрать приложение macOS
+	@mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources" "$(BUILD_DIR)/architectures"
 	@for arch in $(ARCHS); do \
 		$(SWIFTC) -O -target $$arch-apple-macosx$(MACOS_VERSION) $(SOURCES) -o "$(BUILD_DIR)/architectures/CodexNumbers-$$arch" -framework AppKit || exit $$?; \
 	done
 	@lipo -create $(foreach arch,$(ARCHS),"$(BUILD_DIR)/architectures/CodexNumbers-$(arch)") -output "$(APP)/Contents/MacOS/CodexNumbers"
 	@cp Info.plist "$(APP)/Contents/Info.plist"
+	@cp "$(ICON_FILE)" "$(APP)/Contents/Resources/AppIcon.icns"
 	@/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(VERSION)" "$(APP)/Contents/Info.plist"
 	@/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(VERSION)" "$(APP)/Contents/Info.plist"
 	@codesign --force --sign - "$(APP)"
