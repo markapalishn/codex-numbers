@@ -87,9 +87,6 @@ struct LimitSnapshot {
             return (used, resets, duration)
         }
     }
-    func remaining(now: Double = Date().timeIntervalSince1970) -> Int? {
-        current(now: now)?.remaining
-    }
     func current(now: Double = Date().timeIntervalSince1970) -> (remaining: Int, resets: Double, duration: Double?)? {
         // A passed reset needs fresh server data; don't invent a full allowance.
         guard !windows.isEmpty, windows.allSatisfy({ $0.resets > now }),
@@ -112,7 +109,6 @@ final class SessionReader {
     var pending = Data()
     var total = Tokens()
     var current = Usage()
-    var isChild = false
     var limit: LimitSnapshot?
     var model = "Неизвестная модель"
     var projectPath = ""
@@ -123,7 +119,6 @@ final class SessionReader {
     var responses: [String: TokenSample] = [:]
     var legacy: [TokenSample] = []
     var modernTurns = Set<String>()
-    var checkpoints: [String: Tokens] = [:]
     var usage: Usage? {
         guard let state = states.values.max(by: { $0.usage.timestamp < $1.usage.timestamp }) else { return nil }
         var value = state.usage
@@ -165,7 +160,6 @@ final class SessionReader {
             projectPath = p["cwd"] as? String ?? ""
             current.project = projectPath.isEmpty ? "Codex" : URL(fileURLWithPath: projectPath).lastPathComponent
             current.session = p["id"] as? String ?? ""
-            if let source = p["source"] as? [String: Any], source["subagent"] != nil { isChild = true }
         case "turn_context":
             model = p["model"] as? String ?? model
             turnID = p["turn_id"] as? String ?? turnID
@@ -199,12 +193,7 @@ final class SessionReader {
             if responses[response] == nil {
                 responses[response] = TokenSample(id: response, request: root, date: date,
                     project: context.project, projectPath: context.path, model: context.model,
-                    tokens: Tokens(raw), localTurn: turn,
-                    session: p["session_id"] as? String ?? current.session, authoritative: true)
-            }
-            if let checkpoint = p["turn_token_usage"] as? [String: Any] {
-                let value = Tokens(checkpoint)
-                if value.input + value.output >= (checkpoints[turn].map { $0.input + $0.output } ?? 0) { checkpoints[turn] = value }
+                    tokens: Tokens(raw), localTurn: turn, authoritative: true)
             }
         case "event_msg":
             switch p["type"] as? String {
@@ -238,7 +227,7 @@ final class SessionReader {
                 states[turnID]?.usage.timestamp = stamp
                 legacy.append(TokenSample(id: "legacy|\(turnID)|\(stamp)|\(next.input)|\(next.output)",
                     request: turnID, date: date, project: current.project, projectPath: projectPath,
-                    model: model, tokens: delta, localTurn: turnID, session: current.session))
+                    model: model, tokens: delta, localTurn: turnID))
             default: break
             }
         default: break
@@ -249,9 +238,9 @@ final class SessionReader {
         defer { try? f.close() }
         guard let size = try? f.seekToEnd() else { return }
         if size < offset {
-            offset = 0; pending = Data(); total = Tokens(); current = Usage(); isChild = false
+            offset = 0; pending = Data(); total = Tokens(); current = Usage()
             states = [:]; contexts = [:]; responses = [:]; legacy = []; modernTurns = []
-            checkpoints = [:]; pendingRequestText = ""; limit = nil; model = "Неизвестная модель"; projectPath = ""; turnID = ""
+            pendingRequestText = ""; limit = nil; model = "Неизвестная модель"; projectPath = ""; turnID = ""
         }
         guard size > offset else { return }
         do {
@@ -299,7 +288,7 @@ final class UsageMonitor {
             return TokenSample(id: sample.id, request: sample.request, date: sample.date,
                 project: parent?.usage.project ?? sample.project, projectPath: parent?.projectPath ?? sample.projectPath,
                 model: sample.model, tokens: sample.tokens, localTurn: sample.localTurn,
-                session: sample.session, authoritative: sample.authoritative, requestText: parent?.requestText ?? "")
+                authoritative: sample.authoritative, requestText: parent?.requestText ?? "")
         }.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
     }
     func selectedUsage(now: Date = Date(), samples: [TokenSample]? = nil) -> Usage? {

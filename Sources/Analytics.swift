@@ -9,10 +9,8 @@ struct TokenSample {
     let model: String
     let tokens: Tokens
     var localTurn: String = ""
-    var session: String = ""
     var authoritative: Bool = false
     var requestText: String = ""
-    var count: Int { tokens.input + tokens.output }
     private static let fractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
     }()
@@ -46,7 +44,6 @@ struct AnalyticsGroup {
     let isEstimate: Bool
 }
 struct AnalyticsRequest {
-    let id: String
     let date: Date
     let project: String
     let models: String
@@ -67,11 +64,7 @@ struct AnalyticsSummary {
     let hourly: Bool
     var isEstimate: Bool { samples.contains { !$0.authoritative } }
     var total: Int { samples.reduce(0) { $0 + countMode.count($1.tokens) } }
-    var input: Int { samples.reduce(0) { $0 + $1.tokens.input } }
-    var cached: Int { samples.reduce(0) { $0 + $1.tokens.cached } }
-    var output: Int { samples.reduce(0) { $0 + $1.tokens.output } }
     var requestCount: Int { Set(samples.map(\.request)).count }
-    var cachePercent: Int { input == 0 ? 0 : Int((100 * Double(cached) / Double(input)).rounded()) }
     init(samples: [TokenSample], period: Int, project: String? = nil, model: String? = nil, countMode: TokenCountMode = .all, now: Date = Date(), calendar: Calendar = .current) {
         self.countMode = countMode
         end = now
@@ -92,8 +85,8 @@ struct AnalyticsSummary {
         }.sorted { $0.total == $1.total ? $0.key < $1.key : $0.total > $1.total }
     }
     var requests: [AnalyticsRequest] {
-        Dictionary(grouping: samples, by: \.request).map { key, values in
-            AnalyticsRequest(id: key, date: values.map(\.date).max()!, project: values.first!.project,
+        Dictionary(grouping: samples, by: \.request).map { _, values in
+            AnalyticsRequest(date: values.map(\.date).max()!, project: values.first!.project,
                 models: Set(values.map(\.model)).sorted().joined(separator: ", "), text: values.first(where: { !$0.requestText.isEmpty })?.requestText ?? "", total: values.reduce(0) { $0 + countMode.count($1.tokens) }, isEstimate: values.contains { !$0.authoritative })
         }.sorted { $0.date > $1.date }
     }
