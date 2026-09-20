@@ -5,7 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var panel: NSPanel!
     var badge: BadgeView!
     var timer: Timer?
-    var countMode = TokenCountMode.load()
+    var countMode: TokenCountMode = .all
     var current: Usage?
     var displayed: Usage?
     let queue = DispatchQueue(label: "local.codex-numbers.reader", qos: .utility)
@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        migrateLegacyPreferences()
+        countMode = TokenCountMode.load()
         installLoginAgentIfNeeded()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "—"
@@ -73,6 +75,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
         timer?.tolerance = 0.3
+    }
+
+    private func migrateLegacyPreferences() {
+        let previous = UserDefaults(suiteName: "local.codex-numbers")
+        let current = UserDefaults.standard
+        for key in [TokenCountMode.defaultsKey, "NSWindow Frame CodexNumbersPanel"] {
+            if current.object(forKey: key) == nil, let value = previous?.object(forKey: key) {
+                current.set(value, forKey: key)
+            }
+        }
     }
 
     private func installLoginAgentIfNeeded() {
